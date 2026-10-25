@@ -30,9 +30,35 @@ let sessionCookie = '';
 let unauthorizedListener = null;
 
 /**
+ * Endpoints where HTTP 401 means "these credentials were rejected", NOT
+ * "your session expired".
+ *
+ * This distinction is load-bearing. The backend answers a failed login with
+ * 401 and the reason as a TOP-LEVEL flag (locked / password_expired /
+ * password_breached). Treating that as session expiry would show the
+ * pharmacist "your session has ended" when they simply mistyped, and would
+ * fire the global re-login handler in the middle of logging in.
+ */
+const CREDENTIAL_ENDPOINTS = [
+  '/login',
+  '/verify-2fa',
+  '/resend-2fa',
+  '/auth/expired-password',
+  '/auth/breached-password',
+  '/auth/check-password-breach',
+];
+
+function isCredentialAttempt(endpoint) {
+  const path = endpoint.split('?')[0];
+  return CREDENTIAL_ENDPOINTS.includes(path);
+}
+
+/**
  * @typedef {Object} ApiResult
  * @property {boolean} ok        true only when the request AND the backend both succeeded
  * @property {*}       data      the backend's `data` payload, or null
+ * @property {Object}  payload   the WHOLE response body. The auth flows need this:
+ *                               login's state flags are top-level, not inside `data`.
  * @property {string}  message   human-readable message, always safe to show
  * @property {?('network'|'timeout'|'auth'|'forbidden'|'notfound'|'server'|'invalid'|'malformed')} errorKind
  * @property {number}  httpStatus 0 when the request never reached the server
@@ -143,7 +169,7 @@ export async function apiRequest(endpoint, options = {}) {
   } catch (error) {
     clearTimeout(timer);
     const kind = controller.signal.aborted ? 'timeout' : 'network';
-    return { ok: false, data: null, message: messageForKind(kind), errorKind: kind, httpStatus: 0 };
+    return { ok: false, data: null, payload: {}, message: messageForKind(kind), errorKind: kind, httpStatus: 0 };
   }
   clearTimeout(timer);
 
@@ -163,6 +189,7 @@ export async function apiRequest(endpoint, options = {}) {
       return {
         ok: false,
         data: null,
+        payload: {},
         message: messageForKind('malformed'),
         errorKind: 'malformed',
         httpStatus: response.status,
@@ -170,7 +197,9 @@ export async function apiRequest(endpoint, options = {}) {
     }
   }
 
-  if (response.status === 401) {
+  // A 401 while signing in is a rejected credential, not a dead session, so it
+  // must not drop the stored cookie or trigger the app-wide re-login.
+  if (response.status === 401 && !isCredentialAttempt(endpoint)) {
     await clearSession();
     unauthorizedListener?.();
   }
@@ -180,6 +209,7 @@ export async function apiRequest(endpoint, options = {}) {
     return {
       ok: false,
       data: payload?.data ?? null,
+      payload: payload || {},
       message: payload?.message || messageForKind(kind),
       errorKind: kind,
       httpStatus: response.status,
@@ -192,6 +222,7 @@ export async function apiRequest(endpoint, options = {}) {
     return {
       ok: false,
       data: payload.data ?? null,
+      payload,
       message: payload.message || 'The request was refused.',
       errorKind: 'invalid',
       httpStatus: response.status,
@@ -201,6 +232,7 @@ export async function apiRequest(endpoint, options = {}) {
   return {
     ok: true,
     data: payload?.data ?? payload ?? null,
+    payload: payload || {},
     message: payload?.message || '',
     errorKind: null,
     httpStatus: response.status,

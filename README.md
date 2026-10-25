@@ -6,18 +6,48 @@ USIntellix HMS pharmacy backend.
 - **Roadmap:** [ROADMAP.md](ROADMAP.md) — architecture decisions and backend findings
 - **Full phase list:** [PHASES.md](PHASES.md) — 15 phases, every endpoint mapped
 - **Phase 0:** [PHASE-0-STATUS.md](PHASE-0-STATUS.md) — environment readiness
-- **Current state: Phase 1 complete** — project shell, design system, primitives
+- **Current state: Phase 2 complete** — shell, design system, primitives, authentication
 
 ---
 
 ## What works today
 
-The app boots in landscape, shows the permanent left rail, checks the backend
-connection on a timer, and renders the dispensing queue shell on **mock data**.
-Tapping a row opens the detail pane.
+Nothing is reachable without signing in. The app handles every way the backend
+can answer a login:
+
+| Backend response | What the app does |
+| --- | --- |
+| `200 data.user` | signs in (role-checked) |
+| `200 data.requires_2fa` | 6-digit code step, with resend cooldown |
+| `200 dev_mode` | shows the code **and** warns that mail is unconfigured |
+| `401 locked` | lockout notice with a minute countdown |
+| `401 password_expired` | 90-day renewal form |
+| `401 password_breached` | compromised-credential replacement |
+| `401 errors` | per-field validation messages |
+| `401` (bad / suspended / decommissioned) | the server's own message |
+| `must_change_password` | forced first-login setup |
+
+Plus: role guard (a `patient` is sent to the Patient app, any other role
+refused), session restored from secure storage on launch and revalidated
+against `/auth/me`, a 3-minute idle lock, the signed-in pharmacist's name on
+every screen, and a 401 from anywhere returning to sign-in.
+
+After signing in: the left rail, the connection banner, and the dispensing
+queue shell on **mock data**.
 
 Nothing dispenses yet. `GET /dispensing` is wired in Phase 3; the dispense
 itself is Phase 4.
+
+### Idle lock behaviour
+
+Locking **keeps** the session cookie and asks only for the password again,
+rather than signing out. Dropping the session would force a fresh 2FA every few
+idle minutes at a busy counter, and a safety control staff find unusable gets
+switched off — which is worse than one they accept. Someone else taking over
+uses "Sign out instead", which ends the session properly and is recorded.
+
+The username on the lock screen is fixed to whoever is signed in, so it cannot
+be used to switch accounts without a real sign-out.
 
 ## Run it
 
@@ -90,3 +120,24 @@ Two rules worth knowing before changing anything:
   out of a side-loaded APK.
 - **No web target.** `patient_mobile_app` carries a web dev server; this app is
   Android-tablet only, so that machinery is omitted rather than maintained.
+- **NPP acknowledgement is not gated on.** The patient app blocks chart access
+  until the Notice of Privacy Practices is signed (HIPAA § 164.520), and
+  `/auth/npp-acknowledge` works for any user, so the same gate could be applied
+  here. It is not, because § 164.520 is a notice given *to patients* — making a
+  pharmacist sign one to dispense would be inventing a requirement. The call is
+  wired in `AuthService.acknowledgeNpp` if the compliance officer says otherwise.
+
+## Backend changes made for this app
+
+Both are in `usintellix-hospital-management-system`, not here:
+
+- **Phase 0.5** — `backend/config/role_access.php`: the `pharmacist` grants
+  block gained the pharmacy paths. Reads on dispensing, stock, warehouses,
+  dashboard and reports; writes on the dispensing workflow only.
+- **Phase 2** — `AuthController::updateExpiredPassword()` and
+  `updateBreachedPassword()` read the granted user from `$result['data']['user']`.
+  They previously read `$result['user']`, which the service never returns, so
+  both endpoints answered with `data.user = null` after a successful password
+  change. The desktop frontend hits the same endpoints.
+  `passwordUpdate()` in `src/api/auth.js` also falls back to `/auth/me`, so the
+  tablet works against an HMS build from before that fix.

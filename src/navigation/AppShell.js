@@ -4,8 +4,10 @@ import { NavigationContainer, useNavigationContainerRef } from '@react-navigatio
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import SideNav from '../components/SideNav';
 import ConnectionBanner from '../components/ConnectionBanner';
+import IdentityBar from '../components/IdentityBar';
 import QueueScreen from '../screens/QueueScreen';
 import PlaceholderScreen from '../screens/PlaceholderScreen';
+import { useSession } from '../store/session';
 import { CONFIG } from '../constants/config';
 import { THEME } from '../constants/theme';
 
@@ -29,6 +31,7 @@ const SECTIONS = [
 export default function AppShell() {
   const navRef = useNavigationContainerRef();
   const [active, setActive] = useState('Queue');
+  const { user, signOut, lock } = useSession();
 
   const go = (key) => {
     setActive(key);
@@ -49,6 +52,7 @@ export default function AppShell() {
       />
 
       <View style={styles.main}>
+        <IdentityBar user={user} onSignOut={signOut} onLock={lock} />
         <ConnectionBanner />
         <NavigationContainer
           ref={navRef}

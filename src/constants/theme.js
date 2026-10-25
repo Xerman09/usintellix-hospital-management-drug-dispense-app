@@ -47,6 +47,7 @@ export const THEME = {
 
     // Buttons
     btnPrimary: '#0f172a',
+    btnPrimaryHover: '#1e293b',
     btnPrimaryText: '#ffffff',
     btnSecondaryBg: '#ffffff',
     btnSecondaryBorder: '#cbd5e1',
