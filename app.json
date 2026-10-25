@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "USIntellix Pharmacy",
+    "slug": "pharmacy-tablet-app",
+    "version": "0.1.0",
+    "orientation": "landscape",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "android": {
+      "package": "com.usintellix.pharmacytablet",
+      "permissions": [
+        "INTERNET",
+        "ACCESS_NETWORK_STATE",
+        "CAMERA"
+      ]
+    },
+    "plugins": [
+      "expo-secure-store"
+    ],
+    "extra": {
+      "apiBaseUrl": null
+    }
+  }
+}
