@@ -122,6 +122,7 @@ export default function PrescriptionDetail({ prescriptionId }) {
 /** One medicine line: what was ordered, what is owed, and what stock exists. */
 function MedicineLine({ item }) {
   const lots = Array.isArray(item.lots) ? item.lots : [];
+  const recalled = Array.isArray(item.recalled_lots) ? item.recalled_lots : [];
   const stock = lots.reduce((sum, l) => sum + Number(l.quantity || 0), 0);
   const locations = new Set(lots.map((l) => l.warehouse_id)).size;
   const remaining = Number(item.remaining_quantity || 0);
@@ -168,9 +169,45 @@ function MedicineLine({ item }) {
         ) : null}
       </View>
 
+      {recalled.length ? <WithheldLots lots={recalled} unitName={item.drug_unit_name} /> : null}
+
       {item.refill_request ? (
         <Text style={styles.refillNote}>A refill has been requested on this medicine.</Text>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * Stock that is on the shelf but must not be given.
+ *
+ * Shown because the backend now withholds recalled lots from the pickable
+ * list: without this the pharmacist would count 450 capsules on the shelf,
+ * see 200 in the app, and reasonably assume the app was wrong. It carries no
+ * lot id, so there is nothing here that can be selected.
+ */
+function WithheldLots({ lots, unitName }) {
+  const total = lots.reduce((sum, l) => sum + Number(l.quantity || 0), 0);
+  const unit = unitName ? `${unitName}${total === 1 ? '' : 's'}` : 'units';
+
+  return (
+    <View style={styles.withheld}>
+      <View style={styles.withheldHead}>
+        <Badge token={THEME.safety.recalled} size="sm" />
+        <Text style={styles.withheldSummary}>
+          {lots.length} lot{lots.length === 1 ? '' : 's'} ({total} {unit}) on the shelf cannot be given
+        </Text>
+      </View>
+      {lots.map((l) => (
+        <Text key={l.lot_number} style={styles.withheldLot}>
+          <Text style={styles.withheldLotNo}>{l.lot_number}</Text>
+          {l.warehouse_name ? ` at ${l.warehouse_name}` : ''}
+          {l.recall_number ? ` — recall ${l.recall_number}` : ''}
+          {l.recall_class ? ` (${l.recall_class})` : ''}
+          {l.reason ? `: ${l.reason}` : ''}
+        </Text>
+      ))}
+      <Text style={styles.withheldNote}>Quarantine these and tell the pharmacy manager.</Text>
     </View>
   );
 }
@@ -254,6 +291,26 @@ const styles = StyleSheet.create({
   stock: { ...THEME.type.small, color: THEME.colors.success, fontWeight: '600', marginTop: 2 },
   stockShort: { color: THEME.colors.warning },
   refillNote: { ...THEME.type.small, color: THEME.flag.refill.fg, marginTop: THEME.spacing.sm, fontWeight: '600' },
+
+  withheld: {
+    marginTop: THEME.spacing.md,
+    padding: THEME.spacing.md,
+    borderRadius: THEME.radius.md,
+    backgroundColor: THEME.safety.recalled.bg,
+    borderWidth: 1,
+    borderColor: THEME.safety.recalled.border,
+  },
+  withheldHead: { flexDirection: 'row', alignItems: 'center' },
+  withheldSummary: {
+    ...THEME.type.small,
+    fontWeight: '700',
+    color: THEME.safety.recalled.fg,
+    marginLeft: THEME.spacing.sm,
+    flex: 1,
+  },
+  withheldLot: { ...THEME.type.small, color: THEME.safety.recalled.fg, marginTop: THEME.spacing.xs, lineHeight: 20 },
+  withheldLotNo: { fontWeight: '700' },
+  withheldNote: { ...THEME.type.small, color: THEME.safety.recalled.fg, marginTop: THEME.spacing.sm, fontStyle: 'italic' },
 
   phaseNote: {
     margin: THEME.spacing.lg,

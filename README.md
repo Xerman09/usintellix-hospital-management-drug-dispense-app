@@ -144,23 +144,13 @@ Two rules worth knowing before changing anything:
 Not fixed here — they need a decision, and two of them affect the desktop HMS
 as much as the tablet.
 
-1. **`/dispensing/show` offers recalled lots.** Its `lots[]` filters on
-   `is_active`, `is_quarantined`, quantity and the 60-day expiry window, but
-   never joins `pharmacy_batch_recalls`. The `DEV-RECALL-001` fixture from
-   Phase 0.4 — an active Class II recall — is returned as pickable stock.
-   `dispense()` *does* refuse it (`PharmacyBatchRecallService::isLotRecalled`,
-   covering `active` and `quarantined`), so it cannot actually be given out.
-   The defect is that the refusal comes only at submit: the pharmacist picks
-   the lot, enters a quantity, presses Dispense and *then* learns it is
-   recalled. Phase 4.4 must cross-check recalls in the picker, and ideally
-   `detail()` should exclude or mark them so the desktop benefits too.
-2. **`latest_weight_kg` silently defaults to `68.0`** when no weight is
+1. **`latest_weight_kg` silently defaults to `68.0`** when no weight is
    recorded, and nothing in the payload distinguishes a measured 68 kg from
    the placeholder. The tablet therefore does **not** display patient weight —
    showing a default as if it were measured is worse than showing nothing,
    especially for paediatric dosing. Needs a nullable field before any
    weight-based dosing display (Phase 8).
-3. **A row can show `valid_until` in the past while `is_expired` is false,**
+2. **A row can show `valid_until` in the past while `is_expired` is false,**
    because expiry is judged on `fillable_until`. The app therefore never
    computes expiry itself and always uses the backend's `is_expired`.
 
@@ -178,3 +168,21 @@ Both are in `usintellix-hospital-management-system`, not here:
   change. The desktop frontend hits the same endpoints.
   `passwordUpdate()` in `src/api/auth.js` also falls back to `/auth/me`, so the
   tablet works against an HMS build from before that fix.
+- **Recalled lots** — `DispensingService::detail()` no longer offers a lot under
+  an active recall. Its `lots[]` filtered on `is_active`, `is_quarantined`,
+  quantity and the 60-day expiry window but never joined
+  `pharmacy_batch_recalls`, so a recalled lot was pickable; `dispense()` refused
+  it, but only once the whole dispensing was submitted — after the pharmacist
+  had chosen the lot and entered a quantity. Recalled lots are now excluded for
+  the same reason quarantined and near-expiry ones already were, matching
+  `isLotRecalled`'s `active`/`quarantined` statuses.
+
+  **The desktop benefits with no frontend change**: its lot dropdown is built
+  straight from `item.lots` (`frontend/src/modules/dispensing/dispensing.js`
+  lines 170 and 243).
+
+  Withheld stock is not hidden. Each item also carries **`recalled_lots[]`**
+  (lot number, location, quantity, recall number, class, reason) — with **no lot
+  id**, so nothing there can be submitted. The tablet shows it under the
+  medicine, because a pharmacist who counts 450 on the shelf and sees 200 in the
+  app will otherwise assume the app is wrong.
