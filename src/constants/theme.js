@@ -107,6 +107,17 @@ export const THEME = {
     none: { fg: '#64748b', bg: '#f8fafc', border: '#e2e8f0', label: 'Nothing to dispense' },
   },
 
+  /**
+   * Workflow flags on a queue row. Distinct from THEME.safety, which is only
+   * for medication hazards -- a pending refill request is admin, not danger,
+   * and must not borrow a hazard colour.
+   */
+  flag: {
+    refill: { fg: '#1e40af', bg: '#eff6ff', border: '#bfdbfe', label: 'REFILL ASKED' },
+    unverified: { fg: '#854d0e', bg: '#fefce8', border: '#fde047', label: 'NOT VERIFIED' },
+    blocked: { fg: '#475569', bg: '#f1f5f9', border: '#cbd5e1', label: 'CANNOT FILL' },
+  },
+
   // Read standing, at arm's length.
   type: {
     display: { fontSize: 32, fontWeight: '700' },
@@ -146,11 +157,20 @@ export function safetyForDrug(drug) {
   return null;
 }
 
-/** Why a lot cannot be dispensed, or null when it can. Order matters: worst first. */
+/**
+ * Why a lot cannot be dispensed, or null when it can. Order matters: worst first.
+ *
+ * `is_quarantined` is the lot table's own column; `is_active = 0` is a
+ * retired lot, which is equally undispensable. `is_recalled` is NOT a column --
+ * it has to be joined in from pharmacy_batch_recalls, because
+ * /dispensing/show's `lots[]` does not filter recalled lots out (dispense()
+ * refuses them, but only at submit time). See Phase 4.4.
+ */
 export function blockingReasonForLot(lot) {
   if (!lot) return null;
   if (lot.is_recalled) return THEME.safety.recalled;
   if (lot.is_expired) return THEME.safety.expired;
+  if (lot.is_quarantined === 1 || lot.is_quarantined === true) return THEME.safety.quarantined;
   if (lot.is_active === 0 || lot.is_active === false) return THEME.safety.quarantined;
   return null;
 }

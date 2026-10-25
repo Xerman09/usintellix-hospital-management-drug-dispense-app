@@ -6,7 +6,7 @@ USIntellix HMS pharmacy backend.
 - **Roadmap:** [ROADMAP.md](ROADMAP.md) — architecture decisions and backend findings
 - **Full phase list:** [PHASES.md](PHASES.md) — 15 phases, every endpoint mapped
 - **Phase 0:** [PHASE-0-STATUS.md](PHASE-0-STATUS.md) — environment readiness
-- **Current state: Phase 2 complete** — shell, design system, primitives, authentication
+- **Current state: Phase 3 complete** — shell, design system, auth, live dispensing queue
 
 ---
 
@@ -32,11 +32,23 @@ refused), session restored from secure storage on launch and revalidated
 against `/auth/me`, a 3-minute idle lock, the signed-in pharmacist's name on
 every screen, and a 401 from anywhere returning to sign-in.
 
-After signing in: the left rail, the connection banner, and the dispensing
-queue shell on **mock data**.
+After signing in, the **live dispensing queue**:
 
-Nothing dispenses yet. `GET /dispensing` is wired in Phase 3; the dispense
-itself is Phase 4.
+- All nine backend views as chips — To fill, To verify, Awaiting check,
+  Refills, Partly filled, Expired, Dispensed, Closed, All — each showing the
+  backend's own backlog count, not the length of the loaded page
+- Debounced search over Rx number, patient name and patient number
+- Row badges: dispense status (using the backend's `status_label`), awaiting
+  second check, dangerous drug, expired, refill requested, not verified,
+  nothing to fill
+- Polls every 30s with a live "Updated 12s ago", because the desktop HMS works
+  the same prescriptions; the 300-row cap is surfaced rather than hidden
+- Prescription detail: safety header first (allergies, high-alert, dangerous
+  drug, duplicate therapy, why it cannot be filled), then each medicine line
+  with prescribed / given / still-owed, which fill is under way, and how much
+  usable stock exists
+
+Still read-only. Lot selection and the dispense itself are Phase 4.
 
 ### Idle lock behaviour
 
@@ -126,6 +138,31 @@ Two rules worth knowing before changing anything:
   here. It is not, because § 164.520 is a notice given *to patients* — making a
   pharmacist sign one to dispense would be inventing a requirement. The call is
   wired in `AuthService.acknowledgeNpp` if the compliance officer says otherwise.
+
+## Open backend issues found while building Phase 3
+
+Not fixed here — they need a decision, and two of them affect the desktop HMS
+as much as the tablet.
+
+1. **`/dispensing/show` offers recalled lots.** Its `lots[]` filters on
+   `is_active`, `is_quarantined`, quantity and the 60-day expiry window, but
+   never joins `pharmacy_batch_recalls`. The `DEV-RECALL-001` fixture from
+   Phase 0.4 — an active Class II recall — is returned as pickable stock.
+   `dispense()` *does* refuse it (`PharmacyBatchRecallService::isLotRecalled`,
+   covering `active` and `quarantined`), so it cannot actually be given out.
+   The defect is that the refusal comes only at submit: the pharmacist picks
+   the lot, enters a quantity, presses Dispense and *then* learns it is
+   recalled. Phase 4.4 must cross-check recalls in the picker, and ideally
+   `detail()` should exclude or mark them so the desktop benefits too.
+2. **`latest_weight_kg` silently defaults to `68.0`** when no weight is
+   recorded, and nothing in the payload distinguishes a measured 68 kg from
+   the placeholder. The tablet therefore does **not** display patient weight —
+   showing a default as if it were measured is worse than showing nothing,
+   especially for paediatric dosing. Needs a nullable field before any
+   weight-based dosing display (Phase 8).
+3. **A row can show `valid_until` in the past while `is_expired` is false,**
+   because expiry is judged on `fillable_until`. The app therefore never
+   computes expiry itself and always uses the backend's `is_expired`.
 
 ## Backend changes made for this app
 
