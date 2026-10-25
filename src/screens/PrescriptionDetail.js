@@ -1,8 +1,11 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { View, Text, ScrollView, ActivityIndicator, Pressable, StyleSheet } from 'react-native';
 import Badge from '../components/Badge';
 import SafetyHeader from '../components/SafetyHeader';
-import { useDispensingDetail } from '../query/dispensingQueries';
+import DispenseSheet from '../components/DispenseSheet';
+import ReasonPrompt from '../components/ReasonPrompt';
+import { PrimaryButton, SecondaryButton } from '../components/Form';
+import { useDispensingDetail, useVoidDispense, useClosePrescription } from '../query/dispensingQueries';
 import { THEME, statusStyle } from '../constants/theme';
 
 /**
@@ -19,6 +22,13 @@ import { THEME, statusStyle } from '../constants/theme';
  */
 export default function PrescriptionDetail({ prescriptionId }) {
   const { data, isLoading, isError, error, refetch, isFetching } = useDispensingDetail(prescriptionId);
+
+  const [dispensing, setDispensing] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const [voiding, setVoiding] = useState(null);
+
+  const voidDispense = useVoidDispense();
+  const closePrescription = useClosePrescription();
 
   if (isLoading) {
     return (
@@ -47,6 +57,7 @@ export default function PrescriptionDetail({ prescriptionId }) {
 
   const rx = data?.prescription || {};
   const items = Array.isArray(rx.items) ? rx.items : [];
+  const history = Array.isArray(data?.history) ? data.history : [];
 
   return (
     <ScrollView style={styles.flex} contentContainerStyle={styles.content}>
@@ -78,6 +89,31 @@ export default function PrescriptionDetail({ prescriptionId }) {
         verificationStatus={data?.clinical_verification?.verification_status || null}
       />
 
+      {data?.can_dispense || data?.can_close ? (
+        <View style={styles.actions}>
+          {data?.can_dispense ? (
+            <View style={styles.actionPrimary}>
+              <PrimaryButton title="Dispense" onPress={() => setDispensing(true)} />
+            </View>
+          ) : null}
+          {data?.can_close ? (
+            <View style={styles.actionSecondary}>
+              <SecondaryButton title="Close prescription" onPress={() => setClosing(true)} />
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+
+      {data?.awaiting_check > 0 ? (
+        <View style={styles.awaitingBanner}>
+          <Badge token={THEME.safety.highAlert} text="AWAITING CHECK" size="sm" />
+          <Text style={styles.awaitingText}>
+            A dispensing on this prescription is waiting for a second pharmacist to check it before
+            handover. That check arrives in Phase 5.
+          </Text>
+        </View>
+      ) : null}
+
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>
           MEDICINES ({items.length})
@@ -108,14 +144,101 @@ export default function PrescriptionDetail({ prescriptionId }) {
         </View>
       ) : null}
 
-      <View style={styles.phaseNote}>
-        <Text style={styles.phaseNoteTitle}>Read-only for now</Text>
-        <Text style={styles.phaseNoteText}>
-          Lot selection and dispensing arrive in Phase 4. The stock figures below each medicine come
-          from the usable lots the server offers for that drug.
-        </Text>
-      </View>
+      {history.length ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>DISPENSING HISTORY ({history.length})</Text>
+          {history.map((h) => (
+            <HistoryEntry key={h.id} entry={h} onVoid={() => setVoiding(h)} />
+          ))}
+        </View>
+      ) : null}
+
+      <DispenseSheet
+        visible={dispensing}
+        detail={data}
+        onClose={() => setDispensing(false)}
+      />
+
+      <ReasonPrompt
+        visible={Boolean(voiding)}
+        title={`Undo ${voiding?.dispense_number || 'this dispensing'}?`}
+        description="The stock goes back to the lots it came from and the charges are voided. This is recorded against your name."
+        confirmLabel="Undo dispensing"
+        busy={voidDispense.isPending}
+        error={voidDispense.isError ? voidDispense.error?.message : null}
+        onCancel={() => { voidDispense.reset(); setVoiding(null); }}
+        onConfirm={async (reason) => {
+          try {
+            await voidDispense.mutateAsync({ dispenseId: voiding.id, reason, prescriptionId });
+            setVoiding(null);
+          } catch (e) {
+            // The prompt shows the server's refusal and stays open.
+          }
+        }}
+      />
+
+      <ReasonPrompt
+        visible={closing}
+        title="Close this prescription?"
+        description="The pharmacy will not give the rest of it. Anything already given stays as it is."
+        confirmLabel="Close prescription"
+        busy={closePrescription.isPending}
+        error={closePrescription.isError ? closePrescription.error?.message : null}
+        onCancel={() => { closePrescription.reset(); setClosing(false); }}
+        onConfirm={async (reason) => {
+          try {
+            await closePrescription.mutateAsync({ prescriptionId, reason });
+            setClosing(false);
+          } catch (e) {
+            // Stays open with the message.
+          }
+        }}
+      />
     </ScrollView>
+  );
+}
+
+/** One past dispensing, with the option to undo it. */
+function HistoryEntry({ entry, onVoid }) {
+  const voided = entry.status === 'voided';
+  const awaiting = entry.check_status === 'awaiting';
+
+  return (
+    <View style={[styles.history, voided && styles.historyVoided]}>
+      <View style={styles.historyTop}>
+        <Text style={styles.historyNumber}>{entry.dispense_number}</Text>
+        <View style={styles.historyBadges}>
+          {voided ? <Badge token={THEME.flag.blocked} text="UNDONE" size="sm" /> : null}
+          {awaiting && !voided ? <Badge token={THEME.safety.highAlert} text="AWAITING CHECK" size="sm" /> : null}
+          {entry.check_status === 'checked' ? <Badge token={THEME.status.dispensed} text="CHECKED" size="sm" /> : null}
+        </View>
+      </View>
+
+      <Text style={styles.historyMeta}>
+        {[entry.dispensed_date, entry.warehouse_name, entry.dispensed_by_name && `by ${entry.dispensed_by_name}`]
+          .filter(Boolean)
+          .join('  ·  ')}
+      </Text>
+
+      {(entry.items || []).map((i, idx) => (
+        <Text key={`${entry.id}-${idx}`} style={styles.historyItem}>
+          {i.title} &#8212; {i.quantity} {i.unit_name || ''}
+          {i.lot_number ? `  (lot ${i.lot_number})` : ''}
+          {i.fill_label ? `  ${i.fill_label}` : ''}
+        </Text>
+      ))}
+
+      {voided ? (
+        <Text style={styles.historyVoidReason}>
+          Undone{entry.voided_by_name ? ` by ${entry.voided_by_name}` : ''}
+          {entry.void_reason ? `: ${entry.void_reason}` : ''}
+        </Text>
+      ) : (
+        <View style={styles.historyAction}>
+          <SecondaryButton title="Undo this dispensing" onPress={onVoid} />
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -312,14 +435,50 @@ const styles = StyleSheet.create({
   withheldLotNo: { fontWeight: '700' },
   withheldNote: { ...THEME.type.small, color: THEME.safety.recalled.fg, marginTop: THEME.spacing.sm, fontStyle: 'italic' },
 
-  phaseNote: {
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: THEME.spacing.lg,
+    backgroundColor: THEME.colors.cardBg,
+    borderBottomWidth: 1,
+    borderBottomColor: THEME.colors.borderSubtle,
+  },
+  actionPrimary: { flex: 1, maxWidth: 260 },
+  actionSecondary: { flex: 1, maxWidth: 260, marginLeft: THEME.spacing.md },
+
+  awaitingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
     margin: THEME.spacing.lg,
+    marginBottom: 0,
     padding: THEME.spacing.md,
     borderRadius: THEME.radius.md,
-    backgroundColor: THEME.colors.warningBg,
+    backgroundColor: THEME.safety.highAlert.bg,
     borderWidth: 1,
-    borderColor: THEME.colors.warningBorder,
+    borderColor: THEME.safety.highAlert.border,
   },
-  phaseNoteTitle: { ...THEME.type.bodyStrong, color: '#92400e' },
-  phaseNoteText: { ...THEME.type.small, color: '#92400e', marginTop: 2, lineHeight: 20 },
+  awaitingText: {
+    ...THEME.type.small,
+    color: THEME.safety.highAlert.fg,
+    marginLeft: THEME.spacing.sm,
+    flex: 1,
+    lineHeight: 20,
+  },
+
+  history: {
+    padding: THEME.spacing.md,
+    marginBottom: THEME.spacing.sm,
+    borderRadius: THEME.radius.md,
+    backgroundColor: THEME.colors.cardBg,
+    borderWidth: 1,
+    borderColor: THEME.colors.borderSubtle,
+  },
+  historyVoided: { backgroundColor: THEME.colors.rowAlt, opacity: 0.85 },
+  historyTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  historyNumber: { ...THEME.type.mono, color: THEME.colors.textTitle },
+  historyBadges: { flexDirection: 'row', gap: 4 },
+  historyMeta: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: 2 },
+  historyItem: { ...THEME.type.small, color: THEME.colors.textValue, marginTop: 4 },
+  historyVoidReason: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: THEME.spacing.sm, fontStyle: 'italic' },
+  historyAction: { marginTop: THEME.spacing.md, maxWidth: 240 },
 });

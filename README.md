@@ -6,7 +6,7 @@ USIntellix HMS pharmacy backend.
 - **Roadmap:** [ROADMAP.md](ROADMAP.md) — architecture decisions and backend findings
 - **Full phase list:** [PHASES.md](PHASES.md) — 15 phases, every endpoint mapped
 - **Phase 0:** [PHASE-0-STATUS.md](PHASE-0-STATUS.md) — environment readiness
-- **Current state: Phase 3 complete** — shell, design system, auth, live dispensing queue
+- **Current state: Phase 4 complete** — shell, design system, auth, queue, **dispensing**
 
 ---
 
@@ -48,7 +48,28 @@ After signing in, the **live dispensing queue**:
   with prescribed / given / still-owed, which fill is under way, and how much
   usable stock exists
 
-Still read-only. Lot selection and the dispense itself are Phase 4.
+And **dispensing works**: pick a location, enter quantities on the NumPad, choose
+a lot or let the server allocate, then dispense. Plus undoing a dispensing
+(void), closing a prescription, and the dispensing history per prescription.
+
+### Three backend rules that shape the dispensing screen
+
+1. **One location per dispensing.** `dispense()` takes a single `warehouse_id`
+   and only sees lots there, so the location is chosen first — the sheet ranks
+   locations by how many of the prescription's medicines each can fully cover.
+2. **Splitting across lots is automatic, not manual.** Omit `lot_id` and the
+   server takes earliest-expiry-first across every usable lot at that location,
+   splitting a line as needed. Pin a `lot_id` and *only* that lot is used — if
+   it is short the line is refused rather than topped up. The same line twice in
+   one request is rejected, so a client cannot describe its own split. "Earliest
+   expiry first" is therefore the default, and the picker previews exactly which
+   lots will be drawn from.
+3. **FEFO order is `expires_date IS NULL, expires_date, id`** — dated lots
+   first, soonest first, undated last. `fefoCompare()` reproduces it exactly so
+   the preview cannot disagree with what the server does.
+
+Payment and the charge slip are Phase 7; the high-alert second check is Phase 5
+(a dispensing that needs one is held, and the sheet says so).
 
 ### Idle lock behaviour
 
@@ -168,6 +189,25 @@ Both are in `usintellix-hospital-management-system`, not here:
   change. The desktop frontend hits the same endpoints.
   `passwordUpdate()` in `src/api/auth.js` also falls back to `/auth/me`, so the
   tablet works against an HMS build from before that fix.
+- **Dispensing was not atomic** (Phase 4) — `dispense()` opened a transaction and
+  took `SELECT … FOR UPDATE` row locks, then called
+  `PrescriptionVerificationService::ensureTableExists()` and, per candidate lot,
+  `PharmacyBatchRecallService::isLotRecalled()`. Both run
+  `CREATE TABLE IF NOT EXISTS`, and **MySQL implicitly COMMITs on DDL even when
+  nothing changes** — so the transaction ended early, the row locks were
+  released, and every following insert ran in autocommit. `commit()` then threw
+  *"There is no active transaction"*, the `catch` block's `rollBack()` threw on
+  top of it, and the caller got a fatal error **for a dispensing that had really
+  happened** and could not be rolled back.
+
+  Fixed by giving `PharmacyBatchRecallService::ensureTableExists()` the same
+  `$schemaChecked` guard its sibling service already had, and warming both up
+  *before* the transaction opens, so the inner calls are no-ops. Verified: a
+  dispense + void round trip passes 16 assertions (stock, FEFO over eligible
+  lots only, ledger, charges, status, reversal), and five refusal paths write
+  nothing at all.
+
+  This affected the desktop HMS identically — it is the same service.
 - **Recalled lots** — `DispensingService::detail()` no longer offers a lot under
   an active recall. Its `lots[]` filtered on `is_active`, `is_quarantined`,
   quantity and the 60-day expiry window but never joined
