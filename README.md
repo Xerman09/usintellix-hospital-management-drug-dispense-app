@@ -6,7 +6,7 @@ USIntellix HMS pharmacy backend.
 - **Roadmap:** [ROADMAP.md](ROADMAP.md) — architecture decisions and backend findings
 - **Full phase list:** [PHASES.md](PHASES.md) — 15 phases, every endpoint mapped
 - **Phase 0:** [PHASE-0-STATUS.md](PHASE-0-STATUS.md) — environment readiness
-- **Current state: Phase 7 complete** — auth, queue, dispensing, second check, scanning, **payment**
+- **Current state: Phase 8 complete** — dispensing, second check, scanning, payment, **refills + verification**
 
 ---
 
@@ -102,6 +102,38 @@ than no receipt.
 negative balance there — the charges are cancelled but the money was taken.
 Clamping that to zero and calling it "settled" would quietly hide money owed
 back to the patient, so the slip names it and says to refund through billing.
+
+### Refills: dispensing one is not requesting one
+
+Two different actions, and the app keeps them apart:
+
+- **Dispense a refill** — the patient is here, so give it now. Done from the
+  dispensing sheet (`item.can_refill`).
+- **Record a refill request** — the patient is *not* here; they rang, or someone
+  asked for them. The pharmacy fills it later.
+
+Both need the current fill finished and a refill left inside the refill period.
+Requesting also needs no request already waiting, because the backend allows one
+pending request per medicine. A *declined* request does not block a new one.
+
+Pending requests appear on the prescription and in the queue's **Refills** view.
+**A decline needs a reason and the patient sees it** — the backend says so
+explicitly, so the prompt does too.
+
+### Clinical verification (read-only)
+
+The verification screen reads **two sources**, because neither alone is the list
+a pharmacist wants:
+
+| Tab | Source | Why |
+| --- | --- | --- |
+| To verify | the queue's `to_verify` view | A prescription with **no verification record at all** cannot appear in a list of records — and those are exactly the ones needing attention |
+| On hold | records with `Rejected` / `Intervention Needed` / `Clarification Requested` | `dispense()` refuses these outright, so a prescription that "won't dispense" is findable |
+| Approved | records with `Approved` | for looking back |
+
+Recording a decision stays on the desktop (Phase 8.4): the form covers renal
+function, weight-based dosing, indication and interaction cross-checks — a
+sit-down job, not a counter one. The screen says so rather than hiding it.
 
 ### Scanning
 
@@ -321,6 +353,18 @@ Both are in `usintellix-hospital-management-system`, not here:
   change. The desktop frontend hits the same endpoints.
   `passwordUpdate()` in `src/api/auth.js` also falls back to `/auth/me`, so the
   tablet works against an HMS build from before that fix.
+- **`/dispensing/clinical-verifications` had never worked** (Phase 8) — both its
+  methods were declared `index(Request $request)` / `save(Request $request)`,
+  but `Router` dispatches with `$instance->$methodName()` and passes nothing, so
+  every call threw `ArgumentCountError` and returned a 500. `save()` was broken
+  twice over: it also called `$request->attribute()` and `$request->body()`,
+  neither of which exists on `Core\Request`.
+
+  Fixed by constructing the `Request` inside each method and taking the body
+  from `all()` and the user from the session, as every other controller in the
+  codebase does. The route now answers (401 unauthenticated instead of 500), and
+  the service underneath was always fine — which is why `detail()` could show a
+  verification record while the queue endpoint could not be called at all.
 - **`is_indigent` exposed** (Phase 7) — `detail().patient` now carries it, so the
   pharmacist can see it before charging.
 

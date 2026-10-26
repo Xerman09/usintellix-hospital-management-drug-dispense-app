@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DispensingService } from '../api/dispensing';
+import { VerificationService } from '../api/verification';
 import { unwrap } from './queryClient';
 import { CONFIG } from '../constants/config';
 
@@ -129,6 +130,33 @@ export function useRecordPayment() {
       return data;
     },
   };
+}
+
+/** POST /dispensing/refill-request -- staff recording a refill the patient wants. */
+export function useRequestRefill() {
+  return useDispensingWrite(({ body }) =>
+    DispensingService.requestRefill(body.prescription_item_id, body.notes)
+  );
+}
+
+/** POST /dispensing/refill-decline -- the reason is shown to the patient. */
+export function useDeclineRefill() {
+  return useDispensingWrite(({ requestId, reason }) => DispensingService.declineRefill(requestId, reason));
+}
+
+/**
+ * Existing clinical verification records.
+ *
+ * Note this lists RECORDS, not prescriptions needing one: a prescription with
+ * no record at all does not appear here. Those come from the queue's
+ * `to_verify` view instead.
+ */
+export function useVerifications(filters) {
+  return useQuery({
+    queryKey: ['dispensing', 'verifications', filters],
+    queryFn: () => unwrap(VerificationService.list(filters)),
+    staleTime: 30000,
+  });
 }
 
 /** The charge slip / receipt for one dispensing. */

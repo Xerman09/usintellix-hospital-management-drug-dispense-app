@@ -8,8 +8,12 @@ import PaymentSheet from '../components/PaymentSheet';
 import ChargeSlipSheet from '../components/ChargeSlipSheet';
 import ReasonPrompt from '../components/ReasonPrompt';
 import { payability, formatMoney } from '../api/payment';
+import { canRequestRefill, canDecline, sourceLabel, buildRefillRequestBody } from '../api/refills';
 import { PrimaryButton, SecondaryButton } from '../components/Form';
-import { useDispensingDetail, useVoidDispense, useClosePrescription } from '../query/dispensingQueries';
+import {
+  useDispensingDetail, useVoidDispense, useClosePrescription,
+  useRequestRefill, useDeclineRefill,
+} from '../query/dispensingQueries';
 import { useSession } from '../store/session';
 import { THEME, statusStyle } from '../constants/theme';
 
@@ -34,10 +38,14 @@ export default function PrescriptionDetail({ prescriptionId }) {
   const [checking, setChecking] = useState(null);
   const [paying, setPaying] = useState(null);
   const [slipFor, setSlipFor] = useState(null);
+  const [requestingRefill, setRequestingRefill] = useState(null);
+  const [decliningRefill, setDecliningRefill] = useState(null);
 
   const { user } = useSession();
   const voidDispense = useVoidDispense();
   const closePrescription = useClosePrescription();
+  const requestRefill = useRequestRefill();
+  const declineRefill = useDeclineRefill();
 
   if (isLoading) {
     return (
@@ -131,9 +139,49 @@ export default function PrescriptionDetail({ prescriptionId }) {
         {items.length === 0 ? (
           <Text style={styles.empty}>This prescription has no medicine lines.</Text>
         ) : (
-          items.map((item) => <MedicineLine key={item.id} item={item} />)
+          items.map((item) => (
+            <MedicineLine
+              key={item.id}
+              item={item}
+              refill={canRequestRefill(item, data)}
+              onRequestRefill={() => setRequestingRefill(item)}
+            />
+          ))
         )}
       </View>
+
+      {(data?.refill_requests || []).length ? (
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>REFILLS WAITING ({data.refill_requests.length})</Text>
+          {data.refill_requests.map((req) => {
+            const item = items.find((i) => i.id === req.prescription_item_id);
+            return (
+              <View key={req.id} style={styles.refillCard}>
+                <Text style={styles.refillTitle}>{item?.title || 'Medicine'}</Text>
+                <Text style={styles.refillMeta}>
+                  {[sourceLabel(req.source), req.requested_by_name, req.created_at]
+                    .filter(Boolean)
+                    .join('  ·  ')}
+                </Text>
+                {req.notes ? <Text style={styles.refillNotes}>{req.notes}</Text> : null}
+
+                <View style={styles.refillActions}>
+                  {item?.can_refill ? (
+                    <View style={styles.refillAction}>
+                      <PrimaryButton title="Dispense the refill" onPress={() => setDispensing(true)} />
+                    </View>
+                  ) : null}
+                  {canDecline(req) ? (
+                    <View style={styles.refillAction}>
+                      <SecondaryButton title="Decline" onPress={() => setDecliningRefill(req)} />
+                    </View>
+                  ) : null}
+                </View>
+              </View>
+            );
+          })}
+        </View>
+      ) : null}
 
       {rx.notes ? (
         <View style={styles.section}>
@@ -232,6 +280,46 @@ export default function PrescriptionDetail({ prescriptionId }) {
             setVoiding(null);
           } catch (e) {
             // The prompt shows the server's refusal and stays open.
+          }
+        }}
+      />
+
+      <ReasonPrompt
+        visible={Boolean(requestingRefill)}
+        title={`Record a refill request for ${requestingRefill?.title || 'this medicine'}?`}
+        description="For when the patient is not here — they rang, or someone asked on their behalf. The pharmacy fills it later. A note is optional."
+        confirmLabel="Record the request"
+        busy={requestRefill.isPending}
+        error={requestRefill.isError ? requestRefill.error?.message : null}
+        optional
+        onCancel={() => { requestRefill.reset(); setRequestingRefill(null); }}
+        onConfirm={async (notes) => {
+          try {
+            await requestRefill.mutateAsync({
+              body: buildRefillRequestBody(requestingRefill.id, notes),
+              prescriptionId,
+            });
+            setRequestingRefill(null);
+          } catch (e) {
+            // Stays open with the server's message.
+          }
+        }}
+      />
+
+      <ReasonPrompt
+        visible={Boolean(decliningRefill)}
+        title="Decline this refill?"
+        description="The patient will see the reason you give, so write it for them."
+        confirmLabel="Decline the refill"
+        busy={declineRefill.isPending}
+        error={declineRefill.isError ? declineRefill.error?.message : null}
+        onCancel={() => { declineRefill.reset(); setDecliningRefill(null); }}
+        onConfirm={async (reason) => {
+          try {
+            await declineRefill.mutateAsync({ requestId: decliningRefill.id, reason, prescriptionId });
+            setDecliningRefill(null);
+          } catch (e) {
+            // Stays open with the server's message.
           }
         }}
       />
@@ -342,7 +430,7 @@ function HistoryEntry({ entry, onVoid, onCheck, onPay, onSlip }) {
 }
 
 /** One medicine line: what was ordered, what is owed, and what stock exists. */
-function MedicineLine({ item }) {
+function MedicineLine({ item, refill, onRequestRefill }) {
   const lots = Array.isArray(item.lots) ? item.lots : [];
   const recalled = Array.isArray(item.recalled_lots) ? item.recalled_lots : [];
   const stock = lots.reduce((sum, l) => sum + Number(l.quantity || 0), 0);
@@ -406,6 +494,14 @@ function MedicineLine({ item }) {
 
       {item.refill_request ? (
         <Text style={styles.refillNote}>A refill has been requested on this medicine.</Text>
+      ) : null}
+
+      {/* Requesting is for when the patient is NOT here. If they are, the
+          refill is dispensed directly from the Dispense sheet instead. */}
+      {refill?.can ? (
+        <View style={styles.lineAction}>
+          <SecondaryButton title="Record a refill request" onPress={onRequestRefill} />
+        </View>
       ) : null}
     </View>
   );
@@ -524,7 +620,22 @@ const styles = StyleSheet.create({
   stock: { ...THEME.type.small, color: THEME.colors.success, fontWeight: '600', marginTop: 2 },
   stockShort: { color: THEME.colors.warning },
   refillNote: { ...THEME.type.small, color: THEME.flag.refill.fg, marginTop: THEME.spacing.sm, fontWeight: '600' },
+  lineAction: { marginTop: THEME.spacing.md, maxWidth: 260 },
   lasaNote: { ...THEME.type.small, color: THEME.safety.lasa.fg, marginTop: THEME.spacing.sm, fontWeight: '600' },
+
+  refillCard: {
+    padding: THEME.spacing.md,
+    marginBottom: THEME.spacing.sm,
+    borderRadius: THEME.radius.md,
+    backgroundColor: THEME.flag.refill.bg,
+    borderWidth: 1,
+    borderColor: THEME.flag.refill.border,
+  },
+  refillTitle: { ...THEME.type.bodyStrong, color: THEME.flag.refill.fg },
+  refillMeta: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: 2 },
+  refillNotes: { ...THEME.type.small, color: THEME.colors.textValue, marginTop: THEME.spacing.sm },
+  refillActions: { flexDirection: 'row', flexWrap: 'wrap', marginTop: THEME.spacing.md, gap: THEME.spacing.md },
+  refillAction: { width: 220 },
   storageNote: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: THEME.spacing.xs },
 
   withheld: {

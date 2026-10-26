@@ -12,6 +12,11 @@ import { THEME } from '../constants/theme';
  *
  * @param {string} [confirmTone] 'danger' for undoing a dispensing
  */
+/**
+ * @param {boolean} [optional] the text is a note, not a reason, so an empty one
+ *                             is allowed. Used for a refill request, where the
+ *                             backend asks for no reason at all.
+ */
 export default function ReasonPrompt({
   visible,
   title,
@@ -19,6 +24,7 @@ export default function ReasonPrompt({
   confirmLabel = 'Confirm',
   busy = false,
   error = null,
+  optional = false,
   onConfirm,
   onCancel,
 }) {
@@ -39,11 +45,11 @@ export default function ReasonPrompt({
 
           {error ? <Notice tone="error" message={error} /> : null}
 
-          <Text style={styles.label}>REASON (REQUIRED)</Text>
+          <Text style={styles.label}>{optional ? 'NOTE (OPTIONAL)' : 'REASON (REQUIRED)'}</Text>
           <TextInput
             value={reason}
             onChangeText={setReason}
-            placeholder="Why is this being done?"
+            placeholder={optional ? 'Anything worth recording' : 'Why is this being done?'}
             placeholderTextColor={THEME.colors.textDim}
             multiline
             maxLength={500}
@@ -60,7 +66,7 @@ export default function ReasonPrompt({
                 title={confirmLabel}
                 onPress={() => onConfirm(trimmed)}
                 busy={busy}
-                disabled={!trimmed}
+                disabled={!optional && !trimmed}
               />
             </View>
           </View>

@@ -6,6 +6,7 @@ import SideNav from '../components/SideNav';
 import ConnectionBanner from '../components/ConnectionBanner';
 import IdentityBar from '../components/IdentityBar';
 import QueueScreen from '../screens/QueueScreen';
+import VerifyScreen from '../screens/VerifyScreen';
 import PlaceholderScreen from '../screens/PlaceholderScreen';
 import { useSession } from '../store/session';
 import { CONFIG } from '../constants/config';
@@ -63,15 +64,7 @@ export default function AppShell() {
         >
           <Stack.Navigator screenOptions={{ headerShown: false }}>
             <Stack.Screen name="Queue" component={QueueScreen} />
-            <Stack.Screen name="Verify">
-              {() => (
-                <PlaceholderScreen
-                  phase="PHASE 8"
-                  title="Clinical verification"
-                  description="The pharmacist verification queue -- renal adjustment, patient weight, clinical indication and allergy cross-check -- is read from /dispensing/clinical-verifications in Phase 8."
-                />
-              )}
-            </Stack.Screen>
+            <Stack.Screen name="Verify" component={VerifyScreen} />
             <Stack.Screen name="Reports">
               {() => (
                 <PlaceholderScreen
