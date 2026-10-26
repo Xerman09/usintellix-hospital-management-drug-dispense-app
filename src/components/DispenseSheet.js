@@ -6,7 +6,8 @@ import LotPicker from './LotPicker';
 import ScanButton from './ScanButton';
 import { Notice, PrimaryButton, SecondaryButton, Field } from './Form';
 import { ScanService } from '../api/scan';
-import { verdictForLot, verdictForPatient, SEVERITY } from '../api/scanVerdict';
+import { verdictForLot, verdictForPatient, dispenseGate, SEVERITY } from '../api/scanVerdict';
+import { CONFIG } from '../constants/config';
 import {
   warehouseOptions, initialEntries, validateDraft, buildDispenseBody,
   lineAllowance, stockAtWarehouse, mapServerErrors, fefoPlan, round3,
@@ -82,10 +83,18 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
   const draft = validateDraft({ detail, warehouseId, entries, discount });
   const lineError = (id) => serverLineErrors[id] || draft.lineErrors[id] || null;
 
-  // Any blocking scan verdict stops the whole dispensing.
-  const blockedByScan =
-    patientScan?.severity === SEVERITY.STOP ||
-    Object.values(lineScans).some((v) => v?.severity === SEVERITY.STOP);
+  // The patient on the prescription, to check the wristband against. `patient`
+  // is the normal source; prescription.patient_id is the same id by another
+  // route, kept as a fallback so the requirement cannot be made unsatisfiable
+  // by one missing field.
+  const expectedPatientId = detail?.patient?.id ?? detail?.prescription?.patient_id ?? null;
+
+  const gate = dispenseGate({
+    patientScan,
+    lineScans,
+    requirePatientScan: CONFIG.REQUIRE_PATIENT_SCAN,
+    expectedPatientId,
+  });
 
   const update = (id, patch) => {
     setEntries((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -212,8 +221,15 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
         />
       ))}
 
-      <Text style={[styles.sectionLabel, styles.sectionSpaced]}>CONFIRM THE PATIENT</Text>
-      <View style={styles.patientScan}>
+      <Text style={[styles.sectionLabel, styles.sectionSpaced]}>
+        CONFIRM THE PATIENT{CONFIG.REQUIRE_PATIENT_SCAN ? ' · REQUIRED' : ''}
+      </Text>
+      <View
+        style={[
+          styles.patientScan,
+          CONFIG.REQUIRE_PATIENT_SCAN && patientScan?.severity !== SEVERITY.OK && styles.patientScanRequired,
+        ]}
+      >
         <Text style={styles.patientName}>{detail?.patient?.name}</Text>
         <Text style={styles.patientNo}>{detail?.patient?.patient_no}</Text>
 
@@ -238,8 +254,10 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
             message={patientScan.message}
           />
         ) : (
-          <Text style={styles.scanHint}>
-            Not yet confirmed. Scanning the wristband is the check that catches the wrong patient.
+          <Text style={CONFIG.REQUIRE_PATIENT_SCAN ? styles.scanRequiredHint : styles.scanHint}>
+            {CONFIG.REQUIRE_PATIENT_SCAN
+              ? 'Required before dispensing. Scan the wristband, or type the patient number in the scan window if it cannot be read.'
+              : 'Not yet confirmed. Scanning the wristband is the check that catches the wrong patient.'}
           </Text>
         )}
       </View>
@@ -401,11 +419,7 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
               <Text style={styles.summaryNote}>Some lines will be taken from more than one lot.</Text>
             ) : null}
             {draft.errors.items ? <Text style={styles.fieldError}>{draft.errors.items}</Text> : null}
-            {blockedByScan ? (
-              <Text style={styles.fieldError}>
-                A scan did not match. Put this right before dispensing.
-              </Text>
-            ) : null}
+            {!gate.allowed ? <Text style={styles.fieldError}>{gate.reason}</Text> : null}
           </View>
 
           <View style={styles.submit}>
@@ -413,7 +427,7 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
               title={dispense.isPending ? 'Dispensing…' : 'Dispense'}
               onPress={submit}
               busy={dispense.isPending}
-              disabled={!draft.ok || blockedByScan}
+              disabled={!draft.ok || !gate.allowed}
             />
           </View>
         </View>
@@ -647,6 +661,14 @@ const styles = StyleSheet.create({
     backgroundColor: THEME.colors.cardBg,
     borderWidth: 1,
     borderColor: THEME.colors.borderSubtle,
+  },
+  patientScanRequired: { borderColor: THEME.safety.highAlert.border, borderWidth: 2, backgroundColor: THEME.safety.highAlert.bg },
+  scanRequiredHint: {
+    ...THEME.type.small,
+    color: THEME.safety.highAlert.fg,
+    fontWeight: '600',
+    marginTop: THEME.spacing.sm,
+    lineHeight: 18,
   },
   patientName: { ...THEME.type.subheading, color: THEME.colors.textTitle },
   patientNo: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: 2 },

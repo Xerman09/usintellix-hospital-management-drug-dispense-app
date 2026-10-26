@@ -39,6 +39,19 @@ export const CONFIG = {
 
   /** Shared-device idle lock (Phase 2.6). */
   IDLE_LOCK_MS: 3 * 60 * 1000,
+
+  /**
+   * The patient's wristband must be confirmed before medicine is handed over.
+   *
+   * Safe to require because manual entry of the patient number is always
+   * available in the scan sheet, so a dead camera, a scuffed barcode or a
+   * relative collecting on the patient's behalf does not stop the counter.
+   *
+   * A pharmacy that wants to run without it sets this to false; the gate is in
+   * one place (dispenseGate in scanVerdict.js) rather than spread through the
+   * dispensing screen.
+   */
+  REQUIRE_PATIENT_SCAN: true,
 };
 
 /** True when the API is still being reached over plain HTTP -- not pilot-safe. */

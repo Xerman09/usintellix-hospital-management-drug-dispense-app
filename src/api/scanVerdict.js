@@ -183,3 +183,55 @@ export function verdictForLot(result, { expectedLotId = null, expectedDrugName =
 export function isBlocking(v) {
   return Boolean(v && v.severity === SEVERITY.STOP);
 }
+
+/**
+ * May this dispensing be sent?
+ *
+ * The scan-related half of the Dispense button's enabled state, kept here and
+ * pure so the conditions that stop a dispensing are testable rather than
+ * scattered through a component.
+ *
+ * Three ways scanning can hold it back:
+ *
+ *   1. A blocking verdict anywhere -- wrong patient, wrong medicine, unusable
+ *      or mismatched lot. Reported through onVerdict, so dismissing the scan
+ *      sheet does not clear it.
+ *   2. The wristband has not been confirmed, when confirmation is required.
+ *      Only an OK verdict counts: a scan that merely identified somebody
+ *      (no expectation sent) confirms nothing.
+ *   3. There is nobody to confirm against. If the prescription arrived without
+ *      a patient id we cannot ask the server "is this the right patient", so
+ *      the requirement would be unsatisfiable -- that is a fault to report,
+ *      not a gate to silently fail.
+ *
+ * @returns {{allowed: boolean, reason: ?string}}
+ */
+export function dispenseGate({
+  patientScan = null,
+  lineScans = {},
+  requirePatientScan = false,
+  expectedPatientId = null,
+} = {}) {
+  const blockingLine = Object.values(lineScans || {}).find(isBlocking);
+  if (blockingLine) {
+    return { allowed: false, reason: blockingLine.title || 'A pack scan did not match.' };
+  }
+
+  if (isBlocking(patientScan)) {
+    return { allowed: false, reason: patientScan.title || 'The patient scan did not match.' };
+  }
+
+  if (requirePatientScan) {
+    if (!expectedPatientId) {
+      return {
+        allowed: false,
+        reason: 'This prescription has no patient on record to check against. Report it before dispensing.',
+      };
+    }
+    if (!patientScan || patientScan.severity !== SEVERITY.OK) {
+      return { allowed: false, reason: 'Confirm the patient first by scanning the wristband.' };
+    }
+  }
+
+  return { allowed: true, reason: null };
+}

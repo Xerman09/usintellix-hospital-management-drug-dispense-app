@@ -104,10 +104,32 @@ QR, Data Matrix, ITF-14). **Manual entry is permanent, not a stopgap**: pharmacy
 barcodes get scuffed and fridges are badly lit, and a camera that cannot read a
 pack must never be why a patient waits.
 
-**One policy question for the Phase 10 pilot:** a patient or pack *mismatch*
-blocks dispensing, but *not scanning at all* currently does not. Making the
-wristband scan mandatory would be safer and is a one-line change; it would also
-stop the counter if the camera fails, so the pharmacy should decide.
+### The wristband scan is mandatory
+
+Dispensing is blocked until the patient is confirmed. This is safe to require
+precisely because **manual entry of the patient number is always available** in
+the scan window — a dead camera, a scuffed wristband, or a relative collecting
+on the patient's behalf does not stop the counter.
+
+The gate lives in one pure function, `dispenseGate()` in
+[scanVerdict.js](src/api/scanVerdict.js), rather than spread through the
+dispensing screen. It blocks on three things, in this order:
+
+1. **Any blocking pack scan** — judged first, so a wrong medicine is named as
+   the reason even if the wristband is also outstanding.
+2. **A patient mismatch.**
+3. **An unmet requirement** — not scanned yet, or scanned without a verdict. A
+   `WARN` does not satisfy it: a scan that merely identified somebody confirms
+   nothing.
+
+It also refuses when the prescription carries **no patient id at all**, because
+the server could then never be asked "is this the right patient" and the
+requirement would be unsatisfiable — the pharmacist is told to report it rather
+than left tapping a dead button. `detail.patient.id` falls back to
+`prescription.patient_id` so one missing field cannot cause that.
+
+Set `CONFIG.REQUIRE_PATIENT_SCAN = false` in
+[config.js](src/constants/config.js) to run without it.
 
 ### The high-alert second check, and the two-session problem
 
