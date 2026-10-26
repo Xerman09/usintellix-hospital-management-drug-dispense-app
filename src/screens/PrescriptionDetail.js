@@ -3,9 +3,11 @@ import { View, Text, ScrollView, ActivityIndicator, Pressable, StyleSheet } from
 import Badge from '../components/Badge';
 import SafetyHeader from '../components/SafetyHeader';
 import DispenseSheet from '../components/DispenseSheet';
+import CheckSheet from '../components/CheckSheet';
 import ReasonPrompt from '../components/ReasonPrompt';
 import { PrimaryButton, SecondaryButton } from '../components/Form';
 import { useDispensingDetail, useVoidDispense, useClosePrescription } from '../query/dispensingQueries';
+import { useSession } from '../store/session';
 import { THEME, statusStyle } from '../constants/theme';
 
 /**
@@ -26,7 +28,9 @@ export default function PrescriptionDetail({ prescriptionId }) {
   const [dispensing, setDispensing] = useState(false);
   const [closing, setClosing] = useState(false);
   const [voiding, setVoiding] = useState(null);
+  const [checking, setChecking] = useState(null);
 
+  const { user } = useSession();
   const voidDispense = useVoidDispense();
   const closePrescription = useClosePrescription();
 
@@ -148,7 +152,12 @@ export default function PrescriptionDetail({ prescriptionId }) {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>DISPENSING HISTORY ({history.length})</Text>
           {history.map((h) => (
-            <HistoryEntry key={h.id} entry={h} onVoid={() => setVoiding(h)} />
+            <HistoryEntry
+              key={h.id}
+              entry={h}
+              onVoid={() => setVoiding(h)}
+              onCheck={() => setChecking(h)}
+            />
           ))}
         </View>
       ) : null}
@@ -157,6 +166,21 @@ export default function PrescriptionDetail({ prescriptionId }) {
         visible={dispensing}
         detail={data}
         onClose={() => setDispensing(false)}
+      />
+
+      <CheckSheet
+        visible={Boolean(checking)}
+        entry={checking ? { ...checking, prescription_id: prescriptionId } : null}
+        items={items}
+        currentUser={user}
+        // Only meaningful when the signed-in pharmacist prepared this one;
+        // otherwise the server is the only authority on who prepared it.
+        preparerUser={checking?.prepared_by_viewer ? user : null}
+        onClose={() => setChecking(null)}
+        onFail={(entry) => {
+          setChecking(null);
+          setVoiding(entry);
+        }}
       />
 
       <ReasonPrompt
@@ -199,9 +223,9 @@ export default function PrescriptionDetail({ prescriptionId }) {
 }
 
 /** One past dispensing, with the option to undo it. */
-function HistoryEntry({ entry, onVoid }) {
+function HistoryEntry({ entry, onVoid, onCheck }) {
   const voided = entry.status === 'voided';
-  const awaiting = entry.check_status === 'awaiting';
+  const awaiting = entry.check_status === 'awaiting' && !voided;
 
   return (
     <View style={[styles.history, voided && styles.historyVoided]}>
@@ -228,14 +252,39 @@ function HistoryEntry({ entry, onVoid }) {
         </Text>
       ))}
 
+      {entry.check_status === 'checked' && entry.checked_by_name ? (
+        <Text style={styles.historyChecked}>
+          Checked by {entry.checked_by_name}
+          {entry.checked_at ? ` on ${entry.checked_at}` : ''}
+          {entry.check_notes ? `: ${entry.check_notes}` : ''}
+        </Text>
+      ) : null}
+
+      {awaiting ? (
+        <View style={styles.historyHold}>
+          <Text style={styles.historyHoldText}>
+            Do not hand this over. It contains a high-alert medicine and needs a second
+            pharmacist&#8217;s check
+            {entry.prepared_by_viewer ? ' — you prepared it, so it cannot be you.' : '.'}
+          </Text>
+        </View>
+      ) : null}
+
       {voided ? (
         <Text style={styles.historyVoidReason}>
           Undone{entry.voided_by_name ? ` by ${entry.voided_by_name}` : ''}
           {entry.void_reason ? `: ${entry.void_reason}` : ''}
         </Text>
       ) : (
-        <View style={styles.historyAction}>
-          <SecondaryButton title="Undo this dispensing" onPress={onVoid} />
+        <View style={styles.historyActions}>
+          {awaiting ? (
+            <View style={styles.historyAction}>
+              <PrimaryButton title="Check this dispensing" onPress={onCheck} />
+            </View>
+          ) : null}
+          <View style={styles.historyAction}>
+            <SecondaryButton title="Undo this dispensing" onPress={onVoid} />
+          </View>
         </View>
       )}
     </View>
@@ -258,7 +307,8 @@ function MedicineLine({ item }) {
         <Text style={styles.lineTitle}>{item.title || item.drug_name || 'Unnamed medicine'}</Text>
         <View style={styles.lineBadges}>
           {item.is_high_alert ? <Badge token={THEME.safety.highAlert} size="sm" /> : null}
-          {item.is_dangerous_drug ? <Badge token={THEME.safety.controlled} size="sm" /> : null}
+          {item.is_lasa ? <Badge token={THEME.safety.lasa} size="sm" /> : null}
+          {item.controlled_class || item.is_dangerous_drug ? <Badge token={THEME.safety.controlled} size="sm" /> : null}
           {!item.can_dispense ? <Badge token={THEME.flag.blocked} size="sm" text="NOT IN CATALOG" /> : null}
           {item.is_complete ? <Badge token={THEME.status.dispensed} size="sm" text="COMPLETE" /> : null}
         </View>
@@ -291,6 +341,16 @@ function MedicineLine({ item }) {
           </Text>
         ) : null}
       </View>
+
+      {item.is_lasa ? (
+        <Text style={styles.lasaNote}>
+          Look-alike / sound-alike &#8212; read the full name and strength aloud at handover.
+        </Text>
+      ) : null}
+
+      {item.storage_condition ? (
+        <Text style={styles.storageNote}>Storage: {item.storage_condition}</Text>
+      ) : null}
 
       {recalled.length ? <WithheldLots lots={recalled} unitName={item.drug_unit_name} /> : null}
 
@@ -414,6 +474,8 @@ const styles = StyleSheet.create({
   stock: { ...THEME.type.small, color: THEME.colors.success, fontWeight: '600', marginTop: 2 },
   stockShort: { color: THEME.colors.warning },
   refillNote: { ...THEME.type.small, color: THEME.flag.refill.fg, marginTop: THEME.spacing.sm, fontWeight: '600' },
+  lasaNote: { ...THEME.type.small, color: THEME.safety.lasa.fg, marginTop: THEME.spacing.sm, fontWeight: '600' },
+  storageNote: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: THEME.spacing.xs },
 
   withheld: {
     marginTop: THEME.spacing.md,
@@ -480,5 +542,16 @@ const styles = StyleSheet.create({
   historyMeta: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: 2 },
   historyItem: { ...THEME.type.small, color: THEME.colors.textValue, marginTop: 4 },
   historyVoidReason: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: THEME.spacing.sm, fontStyle: 'italic' },
-  historyAction: { marginTop: THEME.spacing.md, maxWidth: 240 },
+  historyChecked: { ...THEME.type.small, color: THEME.colors.success, marginTop: THEME.spacing.sm, fontWeight: '600' },
+  historyHold: {
+    marginTop: THEME.spacing.sm,
+    padding: THEME.spacing.sm,
+    borderRadius: THEME.radius.sm,
+    backgroundColor: THEME.safety.highAlert.bg,
+    borderWidth: 1,
+    borderColor: THEME.safety.highAlert.border,
+  },
+  historyHoldText: { ...THEME.type.small, color: THEME.safety.highAlert.fg, fontWeight: '600', lineHeight: 20 },
+  historyActions: { flexDirection: 'row', marginTop: THEME.spacing.md },
+  historyAction: { width: 220, marginRight: THEME.spacing.md },
 });

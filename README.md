@@ -6,7 +6,7 @@ USIntellix HMS pharmacy backend.
 - **Roadmap:** [ROADMAP.md](ROADMAP.md) — architecture decisions and backend findings
 - **Full phase list:** [PHASES.md](PHASES.md) — 15 phases, every endpoint mapped
 - **Phase 0:** [PHASE-0-STATUS.md](PHASE-0-STATUS.md) — environment readiness
-- **Current state: Phase 4 complete** — shell, design system, auth, queue, **dispensing**
+- **Current state: Phase 5 complete** — shell, auth, queue, dispensing, **high-alert second check**
 
 ---
 
@@ -68,8 +68,42 @@ a lot or let the server allocate, then dispense. Plus undoing a dispensing
    first, soonest first, undated last. `fefoCompare()` reproduces it exactly so
    the preview cannot disagree with what the server does.
 
-Payment and the charge slip are Phase 7; the high-alert second check is Phase 5
-(a dispensing that needs one is held, and the sheet says so).
+Payment and the charge slip are Phase 7.
+
+### The high-alert second check, and the two-session problem
+
+A dispensing containing a high-alert medicine is written `check_status =
+'awaiting'` and must not be handed over until a **second person** confirms it.
+The backend reads the acting user from the PHP session cookie and refuses the
+person who prepared it — so a "confirm" button on the preparer's screen would be
+no check at all. The checker has to be genuinely signed in.
+
+Signing them in on the primary session would sign the **preparer out**, mid-shift,
+on a shared counter tablet. So `client.js` keeps a **second cookie jar**: in
+memory only, never written to secure storage, discarded as soon as the check is
+done, and explicitly logged out server-side. Each cookie is its own PHP session,
+so the two coexist. A 401 on the checker's session can never sign the preparer out.
+
+Two routes, chosen by the backend's own `can_check` flag:
+
+| `can_check` | Route | What happens |
+| --- | --- | --- |
+| `true` | self | The signed-in pharmacist did not prepare it, so they are already a valid second checker — no second sign-in |
+| `false` | second user | They prepared it, so a colleague signs in on the secondary session; the preparer stays signed in |
+
+The checker ticks five points (patient, medicine and strength, quantity, lot and
+expiry, label and directions) — all five, because the backend refuses anything
+less — and may leave a note that is stored on the record.
+
+**Failing a check is not a rejection, it is a void.** There is no reject
+endpoint: `check()` only accepts `confirmed = true`. So the fail button undoes
+the dispensing with a reason, which is what `241_dispensing_controls.sql`
+describes.
+
+Verified live, 22 assertions: the preparer is refused ("someone else has to
+check it"), an unconfirmed check is refused, the dispensing is still `awaiting`
+after both refusals, a second user succeeds with `checked_by` set to them, it
+cannot be checked twice, and the prescription's `awaiting_check` returns to 0.
 
 ### Idle lock behaviour
 
@@ -171,7 +205,11 @@ as much as the tablet.
    showing a default as if it were measured is worse than showing nothing,
    especially for paediatric dosing. Needs a nullable field before any
    weight-based dosing display (Phase 8).
-2. **A row can show `valid_until` in the past while `is_expired` is false,**
+2. **`storage_condition` is double-encoded in the database.** It reads
+   `Room temperature (15-30 Â°C)` — a UTF-8 degree sign stored through a latin1
+   connection. The app displays the column as-is rather than guessing at a
+   repair; it needs fixing in the data, not the client.
+3. **A row can show `valid_until` in the past while `is_expired` is false,**
    because expiry is judged on `fillable_until`. The app therefore never
    computes expiry itself and always uses the backend's `is_expired`.
 
@@ -189,6 +227,16 @@ Both are in `usintellix-hospital-management-system`, not here:
   change. The desktop frontend hits the same endpoints.
   `passwordUpdate()` in `src/api/auth.js` also falls back to `/auth/me`, so the
   tablet works against an HMS build from before that fix.
+- **Drug safety attributes were not exposed** (Phase 5) — `detail()` returned
+  only `is_high_alert`, so the LASA, controlled-class, prescription-only and
+  storage flags the catalog already holds (schema `215_drug_registration_enhancements`)
+  could not be shown at all. Each item now also carries `is_lasa`,
+  `controlled_class`, `requires_prescription` and `storage_condition`.
+
+  `controlled_class` holds the literal string `'None'` for ordinary medicines
+  (28 of 35 in this catalog), so it is normalised to `null` — otherwise every
+  drug reads as controlled and the badge meant to single out the 7 dangerous
+  drugs means nothing.
 - **Dispensing was not atomic** (Phase 4) — `dispense()` opened a transaction and
   took `SELECT … FOR UPDATE` row locks, then called
   `PrescriptionVerificationService::ensureTableExists()` and, per candidate lot,

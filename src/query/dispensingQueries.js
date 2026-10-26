@@ -96,3 +96,15 @@ export function useVoidDispense() {
 export function useClosePrescription() {
   return useDispensingWrite(({ prescriptionId, reason }) => DispensingService.close(prescriptionId, reason));
 }
+
+/**
+ * POST /dispensing/check -- the high-alert second check.
+ *
+ * `session` decides whose session it goes out on: the checker's own secondary
+ * session, or the primary one when the signed-in pharmacist did not prepare it.
+ */
+export function useCheckDispense() {
+  return useDispensingWrite(({ dispenseId, confirmed, notes, session }) =>
+    DispensingService.check(dispenseId, { confirmed, notes, session })
+  );
+}

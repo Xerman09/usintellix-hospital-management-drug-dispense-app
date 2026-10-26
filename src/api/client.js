@@ -30,6 +30,33 @@ let sessionCookie = '';
 let unauthorizedListener = null;
 
 /**
+ * A SECOND, short-lived session, used only for the high-alert second check.
+ *
+ * The backend authenticates with a PHP session cookie and reads the acting user
+ * from it, so a second check genuinely has to be made by the checker's own
+ * session -- and the backend refuses it if the acting user is the one who
+ * prepared the dispensing.
+ *
+ * Signing the checker in on the primary session would sign the preparer OUT,
+ * mid-shift, on a shared counter tablet. So the checker gets a separate cookie
+ * jar: in memory only, NEVER written to secure storage, and thrown away as soon
+ * as the check is done. Each cookie is its own PHP session server-side, so the
+ * two coexist and the preparer stays signed in.
+ */
+let secondaryCookie = '';
+
+export const SESSION = { PRIMARY: 'primary', SECONDARY: 'secondary' };
+
+export function hasSecondarySession() {
+  return Boolean(secondaryCookie);
+}
+
+/** Drop the checker's session locally. Always pair with a /logout call. */
+export function clearSecondarySession() {
+  secondaryCookie = '';
+}
+
+/**
  * Endpoints where HTTP 401 means "these credentials were rejected", NOT
  * "your session expired".
  *
@@ -135,11 +162,14 @@ export function onUnauthorized(handler) {
  * Make a request against the HMS API.
  *
  * @param {string} endpoint path beginning with '/', e.g. '/dispensing'
- * @param {{method?: string, body?: *, query?: Object, signal?: AbortSignal}} [options]
+ * @param {{method?: string, body?: *, query?: Object, signal?: AbortSignal,
+ *          session?: 'primary'|'secondary'}} [options]
  * @returns {Promise<ApiResult>}
  */
 export async function apiRequest(endpoint, options = {}) {
-  const { method = 'GET', body, query, signal } = options;
+  const { method = 'GET', body, query, signal, session = SESSION.PRIMARY } = options;
+  const useSecondary = session === SESSION.SECONDARY;
+  const cookie = useSecondary ? secondaryCookie : sessionCookie;
 
   let url = `${CONFIG.BASE_URL}${endpoint}`;
   if (query) {
@@ -162,7 +192,7 @@ export async function apiRequest(endpoint, options = {}) {
       headers: {
         Accept: 'application/json',
         ...(body ? { 'Content-Type': 'application/json' } : {}),
-        ...(sessionCookie ? { Cookie: sessionCookie } : {}),
+        ...(cookie ? { Cookie: cookie } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
     });
@@ -173,11 +203,16 @@ export async function apiRequest(endpoint, options = {}) {
   }
   clearTimeout(timer);
 
-  // Keep the session cookie the server hands back.
+  // Keep the session cookie the server hands back. The checker's cookie stays
+  // in memory -- persisting it would outlive the check and could be restored
+  // on next launch as if the checker were the signed-in pharmacist.
   const setCookie = response.headers.get('set-cookie');
   if (setCookie) {
-    const cookie = setCookie.split(';')[0];
-    if (cookie && cookie !== sessionCookie) await persistCookie(cookie);
+    const fresh = setCookie.split(';')[0];
+    if (fresh) {
+      if (useSecondary) secondaryCookie = fresh;
+      else if (fresh !== sessionCookie) await persistCookie(fresh);
+    }
   }
 
   let payload = null;
@@ -198,8 +233,9 @@ export async function apiRequest(endpoint, options = {}) {
   }
 
   // A 401 while signing in is a rejected credential, not a dead session, so it
-  // must not drop the stored cookie or trigger the app-wide re-login.
-  if (response.status === 401 && !isCredentialAttempt(endpoint)) {
+  // must not drop the stored cookie or trigger the app-wide re-login. Nor may a
+  // 401 on the checker's session sign the preparer out.
+  if (response.status === 401 && !isCredentialAttempt(endpoint) && !useSecondary) {
     await clearSession();
     unauthorizedListener?.();
   }

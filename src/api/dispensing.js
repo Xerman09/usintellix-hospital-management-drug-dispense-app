@@ -1,4 +1,4 @@
-import { apiRequest } from './client';
+import { apiRequest, SESSION } from './client';
 
 /**
  * Pharmacy > Dispensing.
@@ -49,12 +49,30 @@ export const DispensingService = {
     apiRequest('/dispensing/void', { method: 'POST', body: { id: dispenseId, reason } }),
 
   /**
-   * High-alert second check. The backend refuses the person who prepared it,
-   * so the checker must be a different signed-in user (Phase 5.2).
+   * High-alert second check, made on the CHECKER's session.
+   *
+   * The backend reads the acting user from the session cookie and refuses the
+   * person who prepared the dispensing, so this must not go out on the
+   * preparer's session -- it would simply be rejected. It runs on the secondary
+   * session the checker signed in to (see CheckerService).
+   *
+   * There is no "fail" option: the backend only accepts confirmed = true, and
+   * refuses anything else with a validation error. Failing a check means
+   * VOIDING the dispensing instead, which is a separate call.
+   *
+   * `session` defaults to the checker's own session. It is PRIMARY only when
+   * the pharmacist already signed in did not prepare this dispensing, in which
+   * case they are themselves a valid second checker and need not sign in again
+   * (the backend's `can_check` flag says exactly that).
+   *
    * Body: id, confirmed, notes?
    */
-  check(dispenseId, { confirmed, notes } = {}) {
-    return apiRequest('/dispensing/check', { method: 'POST', body: { id: dispenseId, confirmed, notes } });
+  check(dispenseId, { confirmed, notes, session = SESSION.SECONDARY } = {}) {
+    return apiRequest('/dispensing/check', {
+      method: 'POST',
+      body: { id: dispenseId, confirmed, notes },
+      session,
+    });
   },
 
   /** The pharmacy will not give the rest (patient declined, out of stock). */

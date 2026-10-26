@@ -1,4 +1,4 @@
-import { apiRequest, clearSession } from './client';
+import { apiRequest, clearSession, clearSecondarySession, hasSecondarySession, SESSION } from './client';
 import { COUNTER_ROLES, WARD_ROLES, STEP, nextStepFor, stepForUser } from './authFlow';
 
 export { COUNTER_ROLES, WARD_ROLES, STEP };
@@ -116,5 +116,65 @@ export const AuthService = {
     const res = await apiRequest('/logout', { method: 'POST' });
     await clearSession();
     return res;
+  },
+};
+
+/**
+ * The second pharmacist, for a high-alert check.
+ *
+ * Everything here runs on the SECONDARY session so the preparer stays signed
+ * in on the tablet (see client.js). The checker's session exists only for the
+ * length of the check and is ended explicitly afterwards -- both locally and on
+ * the server, so no live PHP session is left behind on a shared device.
+ */
+export const CheckerService = {
+  async login(username, password) {
+    const res = await apiRequest('/login', {
+      method: 'POST',
+      body: { username, password },
+      session: SESSION.SECONDARY,
+    });
+    const flow = nextStepFor(res);
+
+    // A checker who is not allowed to dispense cannot check either.
+    if (flow.step === STEP.WRONG_APP || flow.step === STEP.FORBIDDEN) {
+      await this.signOut();
+    }
+
+    return { ...res, flow };
+  },
+
+  async verify2FA(code) {
+    const res = await apiRequest('/verify-2fa', {
+      method: 'POST',
+      body: { code },
+      session: SESSION.SECONDARY,
+    });
+    const flow = nextStepFor(res);
+
+    if (flow.step === STEP.WRONG_APP || flow.step === STEP.FORBIDDEN) {
+      await this.signOut();
+    }
+
+    return { ...res, flow };
+  },
+
+  resend2FA() {
+    return apiRequest('/resend-2fa', { method: 'POST', session: SESSION.SECONDARY });
+  },
+
+  /**
+   * End the checker's session on the server as well as locally.
+   *
+   * A no-op when no checker ever signed in, so closing the sheet on the
+   * self-check route does not fire a pointless unauthenticated /logout.
+   */
+  async signOut() {
+    if (!hasSecondarySession()) return;
+    try {
+      await apiRequest('/logout', { method: 'POST', session: SESSION.SECONDARY });
+    } finally {
+      clearSecondarySession();
+    }
   },
 };
