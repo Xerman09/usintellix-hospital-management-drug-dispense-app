@@ -6,7 +6,8 @@ USIntellix HMS pharmacy backend.
 - **Roadmap:** [ROADMAP.md](ROADMAP.md) — architecture decisions and backend findings
 - **Full phase list:** [PHASES.md](PHASES.md) — 15 phases, every endpoint mapped
 - **Phase 0:** [PHASE-0-STATUS.md](PHASE-0-STATUS.md) — environment readiness
-- **Current state: Phase 8 complete** — dispensing, second check, scanning, payment, **refills + verification**
+- **Current state: Phase 9 complete** — the whole counter workflow, plus **dashboard and reports**.
+  Only Phase 10 (hardening, UAT, pilot) stands between this and Milestone 1.
 
 ---
 
@@ -134,6 +135,32 @@ a pharmacist wants:
 Recording a decision stays on the desktop (Phase 8.4): the form covers renal
 function, weight-based dosing, indication and interaction cross-checks — a
 sit-down job, not a counter one. The screen says so rather than hiding it.
+
+### Dashboard and reports
+
+A **Dashboard** (stock value, low stock, expiry buckets, transfers, work
+waiting, last stock movements) plus the four pharmacy reports: **dispensing
+log**, **dangerous drugs register**, **unfilled prescriptions** and **by
+prescriber**. Shared date-range presets and location/prescriber filters come
+from `/pharmacy-reports/options`.
+
+Two details that are not just rendering rows:
+
+- **Expiry buckets are labelled from the server's own thresholds**
+  (`expiry_soon_days` / `expiry_watch_days`), so the wording cannot drift from
+  the numbers the dashboard actually used.
+- **"All time" omits the date keys entirely** rather than sending empty
+  strings — the server reads a missing key as "no limit", which is not the same
+  thing as an empty one.
+
+**The dangerous drugs register leads with its verdict.** Its purpose is whether
+the book balance matches the shelf, so anything that does not reconcile is
+pulled to the top, sorted by the size of the discrepancy, and stated with both
+figures ("2 capsule shortfall: the register says 150, the shelf has 148"). A
+controlled-substance discrepancy is a legal matter, not a rounding nuisance, so
+it is never softened — and a surplus is reported as plainly as a shortfall. The
+server's own `reconciled` flag wins over the tablet's arithmetic where they
+disagree.
 
 ### Scanning
 

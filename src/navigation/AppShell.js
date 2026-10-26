@@ -7,7 +7,7 @@ import ConnectionBanner from '../components/ConnectionBanner';
 import IdentityBar from '../components/IdentityBar';
 import QueueScreen from '../screens/QueueScreen';
 import VerifyScreen from '../screens/VerifyScreen';
-import PlaceholderScreen from '../screens/PlaceholderScreen';
+import ReportsScreen from '../screens/ReportsScreen';
 import { useSession } from '../store/session';
 import { CONFIG } from '../constants/config';
 import { THEME } from '../constants/theme';
@@ -65,15 +65,7 @@ export default function AppShell() {
           <Stack.Navigator screenOptions={{ headerShown: false }}>
             <Stack.Screen name="Queue" component={QueueScreen} />
             <Stack.Screen name="Verify" component={VerifyScreen} />
-            <Stack.Screen name="Reports">
-              {() => (
-                <PlaceholderScreen
-                  phase="PHASE 9"
-                  title="Pharmacy reports"
-                  description="Dispensing log, dangerous drugs register, unfilled prescriptions and the by-prescriber report, from /pharmacy-reports in Phase 9."
-                />
-              )}
-            </Stack.Screen>
+            <Stack.Screen name="Reports" component={ReportsScreen} />
           </Stack.Navigator>
         </NavigationContainer>
       </View>
