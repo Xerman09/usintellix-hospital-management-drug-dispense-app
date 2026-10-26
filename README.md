@@ -6,7 +6,7 @@ USIntellix HMS pharmacy backend.
 - **Roadmap:** [ROADMAP.md](ROADMAP.md) — architecture decisions and backend findings
 - **Full phase list:** [PHASES.md](PHASES.md) — 15 phases, every endpoint mapped
 - **Phase 0:** [PHASE-0-STATUS.md](PHASE-0-STATUS.md) — environment readiness
-- **Current state: Phase 5 complete** — shell, auth, queue, dispensing, **high-alert second check**
+- **Current state: Phase 6 complete** — auth, queue, dispensing, second check, **barcode scanning**
 
 ---
 
@@ -69,6 +69,45 @@ a lot or let the server allocate, then dispense. Plus undoing a dispensing
    the preview cannot disagree with what the server does.
 
 Payment and the charge slip are Phase 7.
+
+### Scanning
+
+Three scan points, each backed by a lookup that returns a **verdict**, not just
+a match — the server compares what was scanned against what the pharmacist is
+about to do:
+
+| Scan | Where | Matched on |
+| --- | --- | --- |
+| Rx number | queue → opens that prescription | `prescriptions.rx_number`, exactly |
+| Wristband | dispensing sheet, before handover | `patients.patient_no` |
+| Pack barcode or lot | dispensing sheet, per medicine | `drugs.barcode` (EAN-13) then `drug_inventory_lots.lot_number` |
+
+`patients.id_document_number` is deliberately **not** searchable: it is
+field-level encrypted, and a passport or national ID number is not something a
+pharmacy counter should be able to look up. The patient scan returns age rather
+than date of birth, for the same reason — it is an identity check, not a chart.
+
+**A mismatch is refused, not merely reported.** Each verdict carries a severity,
+and `STOP` blocks the dispense button: wrong patient, wrong medicine, a lot
+that is expired or under recall, a pinned lot that is not the pack in hand, or a
+scan the server could not check at all. `ScanButton` never hands a `STOP` to its
+caller via `onAccept`, so a mismatch cannot be mistaken for a pass; it reports
+it through `onVerdict` instead, which is what keeps the dispense blocked even if
+the sheet is simply closed. Changing a quantity or lot clears that line's scan,
+because the earlier scan no longer describes what is about to be dispensed.
+
+`WARN` is not a refusal — a cancelled or closed prescription still opens, since
+the pharmacist needs to see why it cannot be filled.
+
+Barcode types are limited to what pharmacy labels carry (EAN/UPC, Code 128/39,
+QR, Data Matrix, ITF-14). **Manual entry is permanent, not a stopgap**: pharmacy
+barcodes get scuffed and fridges are badly lit, and a camera that cannot read a
+pack must never be why a patient waits.
+
+**One policy question for the Phase 10 pilot:** a patient or pack *mismatch*
+blocks dispensing, but *not scanning at all* currently does not. Making the
+wristband scan mandatory would be safer and is a one-line change; it would also
+stop the counter if the camera fails, so the pharmacy should decide.
 
 ### The high-alert second check, and the two-session problem
 
@@ -227,6 +266,17 @@ Both are in `usintellix-hospital-management-system`, not here:
   change. The desktop frontend hits the same endpoints.
   `passwordUpdate()` in `src/api/auth.js` also falls back to `/auth/me`, so the
   tablet works against an HMS build from before that fix.
+- **Scan lookups added** (Phase 6) — `GET /dispensing/scan/rx`,
+  `/dispensing/scan/patient` and `/dispensing/scan/lot`, in a new
+  `ScanLookupService` + `ScanController`. Each takes what the pharmacist is
+  about to do (`expected_patient_id`, `expected_drug_id`, `warehouse_id`) and
+  answers with the verdict, so the tablet never decides for itself whether two
+  identifiers mean the same thing. Lot dispensability reuses the very same
+  `NearExpiryQuarantineService::isLotBlocked` and
+  `PharmacyBatchRecallService::isLotRecalled` that `dispense()` uses, so a scan
+  cannot call a lot fine that dispensing would refuse. All three are reads and
+  are already covered by the Phase 0.5 `/dispensing/*` grant. 36 assertions
+  against live data.
 - **Drug safety attributes were not exposed** (Phase 5) — `detail()` returned
   only `is_high_alert`, so the LASA, controlled-class, prescription-only and
   storage flags the catalog already holds (schema `215_drug_registration_enhancements`)

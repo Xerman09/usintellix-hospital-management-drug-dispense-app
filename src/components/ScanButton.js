@@ -1,43 +1,131 @@
-import React, { useState } from 'react';
-import { View, Text, Pressable, Modal, TextInput, StyleSheet } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { View, Text, Pressable, Modal, TextInput, ActivityIndicator, StyleSheet } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { Notice, PrimaryButton, SecondaryButton } from './Form';
+import { SEVERITY } from '../api/scanVerdict';
 import { THEME } from '../constants/theme';
 
 /**
- * Barcode entry.
+ * Scanning a code at the counter.
  *
- * Phase 1 ships the SHELL: the button, the sheet, and the manual-entry path,
- * which works now. The camera is wired in Phase 6, together with the three
- * backend lookup endpoints that turn a scanned code into an id -- without
- * those, a scan has nothing to resolve against, so pretending to scan here
- * would be theatre.
+ * The camera is the fast path; typing is the permanent fallback, not a stopgap.
+ * Pharmacy barcodes get scuffed, fridges are badly lit, and a tablet camera
+ * that cannot read a pack must never be the reason a patient waits.
  *
- * Manual entry is not a stopgap: it stays in Phase 6 as the permanent
- * fallback for dim light and damaged barcodes.
+ * Barcode types are limited to what pharmacy labels actually carry: EAN/UPC for
+ * the product barcode, Code 128/39 for lot and patient labels, and QR/Data
+ * Matrix for 2D codes. Narrowing the list makes decoding faster and stops the
+ * camera latching onto something irrelevant in frame.
  *
- * @param {'rx'|'patient'|'lot'} kind      what is being identified
- * @param {(code: string, source: 'manual'|'camera') => void} onCode
- * @param {string} [title]
- * @param {boolean} [disabled]
+ * `onResolve` is given the raw code and must return a verdict (see
+ * scanVerdict.js). Two callbacks come back, and the difference matters:
+ *
+ *   onVerdict  EVERY verdict, including STOP. The caller needs to know a
+ *              mismatch happened so it can refuse to go on after the sheet is
+ *              closed -- a wrong-patient scan that is merely dismissed must
+ *              still block the dispensing.
+ *   onAccept   only a verdict the pharmacist may act on: a clean pass, or a
+ *              warning they explicitly chose to continue past. A STOP never
+ *              reaches it, so the caller cannot treat one as a pass.
  */
+const BARCODE_TYPES = ['ean13', 'ean8', 'upc_a', 'upc_e', 'code128', 'code39', 'qr', 'datamatrix', 'itf14'];
+
 const PROMPTS = {
-  rx: { title: 'Scan prescription', hint: 'Scan the Rx barcode on the prescription slip, or type the Rx number.', placeholder: 'RX-2026-00001' },
-  patient: { title: 'Scan patient', hint: 'Scan the patient’s wristband or ID card, or type the patient ID.', placeholder: 'Patient ID' },
-  lot: { title: 'Scan lot', hint: 'Scan the barcode on the medicine pack, or type the lot number.', placeholder: 'Lot number' },
+  rx: {
+    title: 'Scan prescription',
+    hint: 'Scan the barcode on the prescription slip, or type the Rx number.',
+    placeholder: 'RX-2026-00001',
+  },
+  patient: {
+    title: 'Scan patient',
+    hint: 'Scan the wristband or ID card, or type the patient number.',
+    placeholder: 'PAT-000001',
+  },
+  lot: {
+    title: 'Scan the pack',
+    hint: 'Scan the barcode on the medicine pack, or type the lot number.',
+    placeholder: 'Lot number or barcode',
+  },
 };
 
-export default function ScanButton({ kind = 'rx', onCode, title, disabled }) {
+export default function ScanButton({
+  kind = 'rx',
+  title,
+  disabled,
+  onResolve,
+  onVerdict,
+  onAccept,
+  compact = false,
+}) {
   const [open, setOpen] = useState(false);
   const [manual, setManual] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [verdict, setVerdict] = useState(null);
+  const [cameraOn, setCameraOn] = useState(true);
+  const [permission, requestPermission] = useCameraPermissions();
+
+  // Cameras fire the same barcode many times a second; one resolve per sheet.
+  const handling = useRef(false);
+  const lastCode = useRef('');
 
   const prompt = PROMPTS[kind] || PROMPTS.rx;
 
-  const submit = () => {
-    const code = manual.trim();
-    if (!code) return;
-    onCode?.(code, 'manual');
+  useEffect(() => {
+    if (!open) return;
     setManual('');
-    setOpen(false);
+    setVerdict(null);
+    setBusy(false);
+    setCameraOn(true);
+    handling.current = false;
+  }, [open]);
+
+  const resolve = async (code, source) => {
+    if (handling.current || !code) return;
+    handling.current = true;
+    lastCode.current = code;
+    setBusy(true);
+    setCameraOn(false);
+
+    try {
+      const next = await onResolve(code, source);
+      setVerdict(next);
+      onVerdict?.(next, code, source);
+
+      // A clean pass needs no confirmation tap: the scan WAS the confirmation.
+      if (next && next.severity === SEVERITY.OK) {
+        onAccept?.(next, code, source);
+        setOpen(false);
+      }
+    } catch (e) {
+      const failed = {
+        severity: SEVERITY.STOP,
+        blocking: true,
+        title: 'Scan failed',
+        message: 'The code could not be checked. Try again.',
+      };
+      setVerdict(failed);
+      onVerdict?.(failed, code, source);
+    } finally {
+      setBusy(false);
+      handling.current = false;
+    }
   };
+
+  const retry = () => {
+    setVerdict(null);
+    onVerdict?.(null, lastCode.current, 'retry');
+    setManual('');
+    setCameraOn(true);
+    handling.current = false;
+  };
+
+  const tone = {
+    [SEVERITY.OK]: 'success',
+    [SEVERITY.WARN]: 'warning',
+    [SEVERITY.STOP]: 'error',
+  }[verdict?.severity] || 'info';
+
+  const granted = permission?.granted;
 
   return (
     <>
@@ -46,7 +134,12 @@ export default function ScanButton({ kind = 'rx', onCode, title, disabled }) {
         disabled={disabled}
         accessibilityRole="button"
         accessibilityLabel={title || prompt.title}
-        style={({ pressed }) => [styles.button, pressed && styles.buttonPressed, disabled && styles.buttonDisabled]}
+        style={({ pressed }) => [
+          styles.button,
+          compact && styles.buttonCompact,
+          pressed && styles.buttonPressed,
+          disabled && styles.buttonDisabled,
+        ]}
       >
         <Text style={styles.buttonIcon}>&#9707;</Text>
         <Text style={[styles.buttonText, disabled && styles.buttonTextDisabled]}>{title || prompt.title}</Text>
@@ -58,36 +151,103 @@ export default function ScanButton({ kind = 'rx', onCode, title, disabled }) {
             <Text style={styles.sheetTitle}>{prompt.title}</Text>
             <Text style={styles.sheetHint}>{prompt.hint}</Text>
 
-            <View style={styles.cameraPlaceholder}>
-              <Text style={styles.cameraPlaceholderText}>
-                Camera scanning arrives in Phase 6.{'\n'}Use manual entry below.
-              </Text>
-            </View>
+            {verdict ? (
+              <View style={styles.verdictWrap}>
+                <Notice tone={tone} title={verdict.title} message={verdict.message} />
+                {verdict.severity === SEVERITY.STOP ? (
+                  <Text style={styles.stopNote}>
+                    This cannot be accepted. Scan the right one, or close and check.
+                  </Text>
+                ) : null}
+              </View>
+            ) : (
+              <View style={styles.cameraBox}>
+                {granted === false ? (
+                  <View style={styles.cameraFallback}>
+                    <Text style={styles.cameraFallbackText}>
+                      The camera is not allowed for this app, so scanning is unavailable. Type the code
+                      below instead.
+                    </Text>
+                    <SecondaryButton title="Allow the camera" onPress={requestPermission} />
+                  </View>
+                ) : !granted ? (
+                  <View style={styles.cameraFallback}>
+                    <Text style={styles.cameraFallbackText}>The camera is needed to scan.</Text>
+                    <PrimaryButton title="Turn on the camera" onPress={requestPermission} />
+                  </View>
+                ) : cameraOn ? (
+                  <>
+                    <CameraView
+                      style={styles.camera}
+                      facing="back"
+                      barcodeScannerSettings={{ barcodeTypes: BARCODE_TYPES }}
+                      onBarcodeScanned={({ data }) => resolve(data, 'camera')}
+                    />
+                    <View style={styles.reticle} pointerEvents="none" />
+                  </>
+                ) : (
+                  <View style={styles.cameraFallback}>
+                    <ActivityIndicator size="large" color={THEME.colors.brandBlue} />
+                  </View>
+                )}
+              </View>
+            )}
 
-            <Text style={styles.label}>ENTER MANUALLY</Text>
-            <TextInput
-              value={manual}
-              onChangeText={setManual}
-              placeholder={prompt.placeholder}
-              placeholderTextColor={THEME.colors.textDim}
-              autoCapitalize="characters"
-              autoCorrect={false}
-              style={styles.input}
-              onSubmitEditing={submit}
-              returnKeyType="done"
-            />
+            {!verdict || verdict.severity !== SEVERITY.OK ? (
+              <>
+                <Text style={styles.label}>
+                  {verdict ? 'TRY ANOTHER CODE' : 'OR ENTER IT MANUALLY'}
+                </Text>
+                <TextInput
+                  value={manual}
+                  onChangeText={setManual}
+                  placeholder={prompt.placeholder}
+                  placeholderTextColor={THEME.colors.textDim}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  style={styles.input}
+                  onSubmitEditing={() => resolve(manual.trim(), 'manual')}
+                  returnKeyType="done"
+                  editable={!busy}
+                />
+              </>
+            ) : null}
 
             <View style={styles.actions}>
-              <Pressable onPress={() => setOpen(false)} style={[styles.action, styles.actionSecondary]}>
-                <Text style={styles.actionSecondaryText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                onPress={submit}
-                disabled={!manual.trim()}
-                style={[styles.action, styles.actionPrimary, !manual.trim() && styles.actionDisabled]}
-              >
-                <Text style={[styles.actionPrimaryText, !manual.trim() && styles.actionDisabledText]}>Confirm</Text>
-              </Pressable>
+              <View style={styles.action}>
+                <SecondaryButton title="Close" onPress={() => setOpen(false)} disabled={busy} />
+              </View>
+              {verdict?.severity === SEVERITY.WARN ? (
+                <>
+                  <View style={styles.action}>
+                    <SecondaryButton title="Scan again" onPress={retry} disabled={busy} />
+                  </View>
+                  <View style={styles.action}>
+                    {/* A warning is not a refusal: the pharmacist may still need
+                        to open a cancelled or closed prescription to see why. */}
+                    <PrimaryButton
+                      title="Continue anyway"
+                      onPress={() => {
+                        onAccept?.(verdict, lastCode.current, 'manual');
+                        setOpen(false);
+                      }}
+                    />
+                  </View>
+                </>
+              ) : verdict ? (
+                <View style={styles.action}>
+                  <PrimaryButton title="Scan again" onPress={retry} busy={busy} />
+                </View>
+              ) : (
+                <View style={styles.action}>
+                  <PrimaryButton
+                    title="Check code"
+                    onPress={() => resolve(manual.trim(), 'manual')}
+                    busy={busy}
+                    disabled={!manual.trim()}
+                  />
+                </View>
+              )}
             </View>
           </View>
         </View>
@@ -106,6 +266,7 @@ const styles = StyleSheet.create({
     borderRadius: THEME.radius.md,
     backgroundColor: THEME.colors.brandBlue,
   },
+  buttonCompact: { minHeight: THEME.touch.min, paddingHorizontal: THEME.spacing.md },
   buttonPressed: { backgroundColor: THEME.colors.brandBlueDark },
   buttonDisabled: { backgroundColor: THEME.colors.btnDisabledBg },
   buttonIcon: { fontSize: 20, color: THEME.colors.btnPrimaryText, marginRight: THEME.spacing.sm },
@@ -121,7 +282,7 @@ const styles = StyleSheet.create({
   },
   sheet: {
     width: '100%',
-    maxWidth: 520,
+    maxWidth: 560,
     padding: THEME.spacing.xl,
     borderRadius: THEME.radius.xl,
     backgroundColor: THEME.colors.cardBg,
@@ -129,18 +290,34 @@ const styles = StyleSheet.create({
   sheetTitle: { ...THEME.type.title, color: THEME.colors.textTitle },
   sheetHint: { ...THEME.type.body, color: THEME.colors.textSubtitle, marginTop: THEME.spacing.sm },
 
-  cameraPlaceholder: {
+  cameraBox: {
     marginTop: THEME.spacing.lg,
-    height: 140,
+    height: 260,
+    borderRadius: THEME.radius.lg,
+    overflow: 'hidden',
+    backgroundColor: THEME.colors.brandDark,
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: THEME.radius.lg,
-    borderWidth: 2,
-    borderStyle: 'dashed',
-    borderColor: THEME.colors.borderStrong,
-    backgroundColor: THEME.colors.inputBg,
   },
-  cameraPlaceholderText: { ...THEME.type.small, color: THEME.colors.textDim, textAlign: 'center' },
+  camera: { ...StyleSheet.absoluteFillObject },
+  reticle: {
+    width: '70%',
+    height: 110,
+    borderWidth: 3,
+    borderColor: 'rgba(255,255,255,0.9)',
+    borderRadius: THEME.radius.md,
+  },
+  cameraFallback: { padding: THEME.spacing.lg, alignItems: 'center' },
+  cameraFallbackText: {
+    ...THEME.type.small,
+    color: THEME.colors.textOnDark,
+    textAlign: 'center',
+    marginBottom: THEME.spacing.md,
+    lineHeight: 20,
+  },
+
+  verdictWrap: { marginTop: THEME.spacing.lg },
+  stopNote: { ...THEME.type.small, color: THEME.colors.error, fontWeight: '700', marginTop: -THEME.spacing.sm },
 
   label: { ...THEME.type.label, color: THEME.colors.textLabel, marginTop: THEME.spacing.lg, marginBottom: THEME.spacing.sm },
   input: {
@@ -155,22 +332,5 @@ const styles = StyleSheet.create({
   },
 
   actions: { flexDirection: 'row', marginTop: THEME.spacing.lg },
-  action: {
-    flex: 1,
-    minHeight: THEME.touch.comfortable,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: THEME.radius.md,
-  },
-  actionSecondary: {
-    marginRight: THEME.spacing.sm,
-    borderWidth: 1,
-    borderColor: THEME.colors.btnSecondaryBorder,
-    backgroundColor: THEME.colors.btnSecondaryBg,
-  },
-  actionSecondaryText: { ...THEME.type.bodyStrong, color: THEME.colors.btnSecondaryText },
-  actionPrimary: { marginLeft: THEME.spacing.sm, backgroundColor: THEME.colors.btnPrimary },
-  actionPrimaryText: { ...THEME.type.bodyStrong, color: THEME.colors.btnPrimaryText },
-  actionDisabled: { backgroundColor: THEME.colors.btnDisabledBg },
-  actionDisabledText: { color: THEME.colors.btnDisabledText },
+  action: { flex: 1, marginHorizontal: THEME.spacing.xs },
 });

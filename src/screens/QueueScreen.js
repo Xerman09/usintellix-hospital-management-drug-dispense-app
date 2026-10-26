@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
 import SplitView from '../components/SplitView';
 import DataTable from '../components/DataTable';
@@ -6,6 +6,8 @@ import Badge from '../components/Badge';
 import ScanButton from '../components/ScanButton';
 import ViewTabs from '../components/ViewTabs';
 import PrescriptionDetail from './PrescriptionDetail';
+import { ScanService } from '../api/scan';
+import { verdictForRx } from '../api/scanVerdict';
 import { useDispensingQueue } from '../query/dispensingQueries';
 import { DEFAULT_VIEW, rowFlags, medicineSummary, freshness, viewMeta } from '../api/queueViews';
 import { THEME, statusStyle } from '../constants/theme';
@@ -56,6 +58,8 @@ export default function QueueScreen() {
   const [search, setSearch] = useState('');
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState(null);
+  const [scanNotice, setScanNotice] = useState(null);
+  const fromScan = useRef(false);
 
   // Debounce typing, so each keystroke is not a request.
   useEffect(() => {
@@ -70,7 +74,13 @@ export default function QueueScreen() {
 
   // Keep the selection honest: if the chosen slip is no longer in this view,
   // clear the detail pane rather than showing a prescription the list denies.
+  //
+  // A scanned prescription is exempt. The pharmacist scanned the slip in their
+  // hand, which is a stronger statement of intent than the current filter --
+  // and it will usually be absent from the list, because they scan precisely
+  // when they cannot find it.
   useEffect(() => {
+    if (fromScan.current) return;
     if (selectedId && rows.length && !rows.some((r) => r.id === selectedId)) {
       setSelectedId(null);
     }
@@ -158,7 +168,15 @@ export default function QueueScreen() {
         </View>
 
         <View style={styles.scanRow}>
-          <ScanButton kind="rx" title="Scan Rx" onCode={(code) => setSearch(code)} />
+          <ScanButton
+            kind="rx"
+            title="Scan Rx"
+            onResolve={async (code) => verdictForRx(await ScanService.rx(code))}
+            onAccept={(v) => {
+              fromScan.current = true;
+              setSelectedId(v.prescriptionId);
+            }}
+          />
         </View>
       </View>
 
@@ -179,7 +197,10 @@ export default function QueueScreen() {
           columns={columns}
           rows={rows}
           keyExtractor={(row) => row.id}
-          onSelect={(row) => setSelectedId(row.id)}
+          onSelect={(row) => {
+            fromScan.current = false;
+            setSelectedId(row.id);
+          }}
           selectedKey={selectedId}
           loading={isLoading}
           emptyText={
@@ -206,7 +227,10 @@ export default function QueueScreen() {
       master={master}
       detail={selectedId ? <PrescriptionDetail prescriptionId={selectedId} /> : null}
       hasSelection={Boolean(selectedId)}
-      onBack={() => setSelectedId(null)}
+      onBack={() => {
+        fromScan.current = false;
+        setSelectedId(null);
+      }}
       emptyDetailText="Select a prescription to see its medicines, allergies and stock."
     />
   );

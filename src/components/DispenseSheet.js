@@ -3,7 +3,10 @@ import { View, Text, Modal, ScrollView, Pressable, TextInput, StyleSheet, useWin
 import Badge from './Badge';
 import NumPad from './NumPad';
 import LotPicker from './LotPicker';
+import ScanButton from './ScanButton';
 import { Notice, PrimaryButton, SecondaryButton, Field } from './Form';
+import { ScanService } from '../api/scan';
+import { verdictForLot, verdictForPatient, SEVERITY } from '../api/scanVerdict';
 import {
   warehouseOptions, initialEntries, validateDraft, buildDispenseBody,
   lineAllowance, stockAtWarehouse, mapServerErrors, fefoPlan, round3,
@@ -45,6 +48,11 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
   const [serverFormErrors, setServerFormErrors] = useState({});
   const [result, setResult] = useState(null);
 
+  // Scan verdicts. A STOP here blocks the dispense: the whole point of
+  // scanning is that a mismatch is refused, not merely reported.
+  const [lineScans, setLineScans] = useState({});
+  const [patientScan, setPatientScan] = useState(null);
+
   const dispense = useDispense();
 
   // Start on the location that can cover the most of this prescription.
@@ -57,6 +65,8 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
     setServerFormErrors({});
     setNotes('');
     setDiscount({ type: null, rate: 0, id_no: '', reason: '' });
+    setLineScans({});
+    setPatientScan(null);
   }, [visible, locations]);
 
   // Changing location changes which lots exist, so the quantities and any
@@ -72,9 +82,22 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
   const draft = validateDraft({ detail, warehouseId, entries, discount });
   const lineError = (id) => serverLineErrors[id] || draft.lineErrors[id] || null;
 
+  // Any blocking scan verdict stops the whole dispensing.
+  const blockedByScan =
+    patientScan?.severity === SEVERITY.STOP ||
+    Object.values(lineScans).some((v) => v?.severity === SEVERITY.STOP);
+
   const update = (id, patch) => {
     setEntries((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
     setServerLineErrors((prev) => {
+      if (!prev[id]) return prev;
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
+    // The quantity or lot changed, so an earlier pack scan no longer describes
+    // what is about to be dispensed.
+    setLineScans((prev) => {
       if (!prev[id]) return prev;
       const next = { ...prev };
       delete next[id];
@@ -189,6 +212,38 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
         />
       ))}
 
+      <Text style={[styles.sectionLabel, styles.sectionSpaced]}>CONFIRM THE PATIENT</Text>
+      <View style={styles.patientScan}>
+        <Text style={styles.patientName}>{detail?.patient?.name}</Text>
+        <Text style={styles.patientNo}>{detail?.patient?.patient_no}</Text>
+
+        <View style={styles.patientScanButton}>
+          <ScanButton
+            kind="patient"
+            title="Scan wristband"
+            onResolve={async (code) =>
+              verdictForPatient(
+                await ScanService.patient(code, detail?.patient?.id),
+                detail?.patient?.name
+              )
+            }
+            onVerdict={(v) => setPatientScan(v)}
+          />
+        </View>
+
+        {patientScan ? (
+          <Notice
+            tone={patientScan.severity === SEVERITY.OK ? 'success' : 'error'}
+            title={patientScan.title}
+            message={patientScan.message}
+          />
+        ) : (
+          <Text style={styles.scanHint}>
+            Not yet confirmed. Scanning the wristband is the check that catches the wrong patient.
+          </Text>
+        )}
+      </View>
+
       <Text style={[styles.sectionLabel, styles.sectionSpaced]}>DISCOUNT</Text>
       <DiscountPicker discount={discount} onChange={setDiscount} errors={{ ...draft.errors, ...serverFormErrors }} />
 
@@ -240,6 +295,52 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
             lotId={activeEntry.lot_id}
             onChange={(lotId) => update(activeItem.id, { lot_id: lotId })}
           />
+
+          <View style={styles.scanLine}>
+            <Text style={styles.sectionLabel}>CHECK THE PACK</Text>
+            <ScanButton
+              kind="lot"
+              title="Scan the pack"
+              onResolve={async (code) =>
+                verdictForLot(
+                  await ScanService.lot(code, {
+                    expectedDrugId: activeItem.drug_id,
+                    warehouseId,
+                  }),
+                  {
+                    expectedLotId: activeEntry.lot_id,
+                    expectedDrugName: activeItem.drug_name || activeItem.title,
+                  }
+                )
+              }
+              // onVerdict, not onAccept: a mismatch must be recorded so the
+              // dispense stays blocked even if the sheet is just closed.
+              onVerdict={(v) =>
+                setLineScans((prev) => {
+                  if (!v) {
+                    const next = { ...prev };
+                    delete next[activeItem.id];
+                    return next;
+                  }
+                  return { ...prev, [activeItem.id]: v };
+                })
+              }
+            />
+
+            {lineScans[activeItem.id] ? (
+              <View style={styles.scanResult}>
+                <Notice
+                  tone={lineScans[activeItem.id].severity === SEVERITY.OK ? 'success' : 'error'}
+                  title={lineScans[activeItem.id].title}
+                  message={lineScans[activeItem.id].message}
+                />
+              </View>
+            ) : (
+              <Text style={styles.scanHint}>
+                Optional, but it is the only check that catches the wrong box off the shelf.
+              </Text>
+            )}
+          </View>
         </>
       ) : (
         <Text style={styles.entryEmpty}>Tap a medicine to enter how much you are giving.</Text>
@@ -300,6 +401,11 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
               <Text style={styles.summaryNote}>Some lines will be taken from more than one lot.</Text>
             ) : null}
             {draft.errors.items ? <Text style={styles.fieldError}>{draft.errors.items}</Text> : null}
+            {blockedByScan ? (
+              <Text style={styles.fieldError}>
+                A scan did not match. Put this right before dispensing.
+              </Text>
+            ) : null}
           </View>
 
           <View style={styles.submit}>
@@ -307,7 +413,7 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
               title={dispense.isPending ? 'Dispensing…' : 'Dispense'}
               onPress={submit}
               busy={dispense.isPending}
-              disabled={!draft.ok}
+              disabled={!draft.ok || blockedByScan}
             />
           </View>
         </View>
@@ -530,6 +636,21 @@ const styles = StyleSheet.create({
   entryFlag: { flexDirection: 'row', alignItems: 'center', marginTop: THEME.spacing.md },
   entryFlagText: { ...THEME.type.small, color: THEME.safety.highAlert.fg, marginLeft: THEME.spacing.sm, flex: 1 },
   entryEmpty: { ...THEME.type.body, color: THEME.colors.textDim, textAlign: 'center', marginTop: THEME.spacing.xxl },
+
+  scanLine: { marginTop: THEME.spacing.xl },
+  scanResult: { marginTop: THEME.spacing.md },
+  scanHint: { ...THEME.type.small, color: THEME.colors.textDim, marginTop: THEME.spacing.sm, lineHeight: 18 },
+
+  patientScan: {
+    padding: THEME.spacing.md,
+    borderRadius: THEME.radius.md,
+    backgroundColor: THEME.colors.cardBg,
+    borderWidth: 1,
+    borderColor: THEME.colors.borderSubtle,
+  },
+  patientName: { ...THEME.type.subheading, color: THEME.colors.textTitle },
+  patientNo: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: 2 },
+  patientScanButton: { marginTop: THEME.spacing.md, marginBottom: THEME.spacing.md, maxWidth: 260 },
 
   discountRow: { flexDirection: 'row', flexWrap: 'wrap', gap: THEME.spacing.sm, marginBottom: THEME.spacing.md },
   discountChip: {
