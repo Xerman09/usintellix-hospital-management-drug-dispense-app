@@ -7,6 +7,7 @@ import ScanButton from './ScanButton';
 import { Notice, PrimaryButton, SecondaryButton, Field } from './Form';
 import { ScanService } from '../api/scan';
 import { verdictForLot, verdictForPatient, dispenseGate, SEVERITY } from '../api/scanVerdict';
+import { formatMoney } from '../api/payment';
 import { CONFIG } from '../constants/config';
 import {
   warehouseOptions, initialEntries, validateDraft, buildDispenseBody,
@@ -30,7 +31,7 @@ import { THEME } from '../constants/theme';
  * answered with a DSP number, because the alternative is telling a pharmacist
  * medicine left the shelf when it did not.
  */
-export default function DispenseSheet({ visible, detail, onClose, onDispensed }) {
+export default function DispenseSheet({ visible, detail, onClose, onDispensed, onTakePayment }) {
   const { width } = useWindowDimensions();
   const wide = width >= 1000;
 
@@ -154,8 +155,20 @@ export default function DispenseSheet({ visible, detail, onClose, onDispensed })
 
             <View style={styles.doneRows}>
               <DoneRow label="Prescription now" value={result.dispense_status} />
-              <DoneRow label="Charged" value={`${result.net_amount}`} />
+              <DoneRow label="Charged" value={formatMoney(result.net_amount)} />
             </View>
+
+            {/* Payment is offered here only when it can actually be taken. A
+                high-alert dispensing has not been handed over yet, and the
+                backend refuses payment until its second check is done. */}
+            {result.needs_check ? null : (
+              <View style={styles.doneAction}>
+                <SecondaryButton
+                  title={`Take payment · ${formatMoney(result.net_amount)}`}
+                  onPress={() => onTakePayment?.(result)}
+                />
+              </View>
+            )}
 
             {result.reorder_evaluation?.draft_pr_number ? (
               <Notice
@@ -730,7 +743,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     marginBottom: THEME.spacing.xl,
   },
-  doneRows: { marginBottom: THEME.spacing.xl },
+  doneRows: { marginBottom: THEME.spacing.lg },
+  doneAction: { marginBottom: THEME.spacing.lg },
   doneRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',

@@ -15,6 +15,7 @@ import { CONFIG } from '../constants/config';
 export const queueKey = (view, q) => ['dispensing', 'queue', view, q];
 export const detailKey = (id) => ['dispensing', 'detail', id];
 export const optionsKey = () => ['dispensing', 'options'];
+export const slipKey = (dispenseId) => ['dispensing', 'charge-slip', dispenseId];
 
 export function useDispensingQueue(view, q) {
   return useQuery({
@@ -107,4 +108,34 @@ export function useCheckDispense() {
   return useDispensingWrite(({ dispenseId, confirmed, notes, session }) =>
     DispensingService.check(dispenseId, { confirmed, notes, session })
   );
+}
+
+/**
+ * POST /dispensing/payment.
+ *
+ * Also drops the cached charge slip: the slip carries paid_amount and balance,
+ * so leaving it would show the pharmacist a receipt that disagrees with the
+ * payment they just took.
+ */
+export function useRecordPayment() {
+  const qc = useQueryClient();
+  const write = useDispensingWrite(({ dispenseId, body }) => DispensingService.payment(dispenseId, body));
+
+  return {
+    ...write,
+    mutateAsync: async (vars) => {
+      const data = await write.mutateAsync(vars);
+      qc.invalidateQueries({ queryKey: slipKey(vars.dispenseId) });
+      return data;
+    },
+  };
+}
+
+/** The charge slip / receipt for one dispensing. */
+export function useChargeSlip(dispenseId) {
+  return useQuery({
+    queryKey: slipKey(dispenseId),
+    queryFn: () => unwrap(DispensingService.chargeSlip(dispenseId)),
+    enabled: Boolean(dispenseId),
+  });
 }

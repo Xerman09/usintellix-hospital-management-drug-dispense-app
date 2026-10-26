@@ -4,7 +4,10 @@ import Badge from '../components/Badge';
 import SafetyHeader from '../components/SafetyHeader';
 import DispenseSheet from '../components/DispenseSheet';
 import CheckSheet from '../components/CheckSheet';
+import PaymentSheet from '../components/PaymentSheet';
+import ChargeSlipSheet from '../components/ChargeSlipSheet';
 import ReasonPrompt from '../components/ReasonPrompt';
+import { payability, formatMoney } from '../api/payment';
 import { PrimaryButton, SecondaryButton } from '../components/Form';
 import { useDispensingDetail, useVoidDispense, useClosePrescription } from '../query/dispensingQueries';
 import { useSession } from '../store/session';
@@ -29,6 +32,8 @@ export default function PrescriptionDetail({ prescriptionId }) {
   const [closing, setClosing] = useState(false);
   const [voiding, setVoiding] = useState(null);
   const [checking, setChecking] = useState(null);
+  const [paying, setPaying] = useState(null);
+  const [slipFor, setSlipFor] = useState(null);
 
   const { user } = useSession();
   const voidDispense = useVoidDispense();
@@ -157,6 +162,8 @@ export default function PrescriptionDetail({ prescriptionId }) {
               entry={h}
               onVoid={() => setVoiding(h)}
               onCheck={() => setChecking(h)}
+              onPay={() => setPaying({ ...h, prescription_id: prescriptionId })}
+              onSlip={() => setSlipFor(h.id)}
             />
           ))}
         </View>
@@ -166,6 +173,21 @@ export default function PrescriptionDetail({ prescriptionId }) {
         visible={dispensing}
         detail={data}
         onClose={() => setDispensing(false)}
+        // Straight from the dispense into payment, which is the counter's real
+        // sequence. The entry is built from what dispense() returned, since the
+        // refetched history has not arrived yet.
+        onTakePayment={(res) => {
+          setDispensing(false);
+          setPaying({
+            id: res.dispense_id,
+            dispense_number: res.dispense_number,
+            prescription_id: prescriptionId,
+            status: 'completed',
+            check_status: res.needs_check ? 'awaiting' : null,
+            net_amount: res.net_amount,
+            paid_amount: 0,
+          });
+        }}
       />
 
       <CheckSheet
@@ -181,6 +203,19 @@ export default function PrescriptionDetail({ prescriptionId }) {
           setChecking(null);
           setVoiding(entry);
         }}
+      />
+
+      <PaymentSheet
+        visible={Boolean(paying)}
+        entry={paying}
+        patientName={data?.patient?.name}
+        onClose={() => setPaying(null)}
+      />
+
+      <ChargeSlipSheet
+        visible={Boolean(slipFor)}
+        dispenseId={slipFor}
+        onClose={() => setSlipFor(null)}
       />
 
       <ReasonPrompt
@@ -223,9 +258,10 @@ export default function PrescriptionDetail({ prescriptionId }) {
 }
 
 /** One past dispensing, with the option to undo it. */
-function HistoryEntry({ entry, onVoid, onCheck }) {
+function HistoryEntry({ entry, onVoid, onCheck, onPay, onSlip }) {
   const voided = entry.status === 'voided';
   const awaiting = entry.check_status === 'awaiting' && !voided;
+  const money = payability(entry);
 
   return (
     <View style={[styles.history, voided && styles.historyVoided]}>
@@ -235,6 +271,12 @@ function HistoryEntry({ entry, onVoid, onCheck }) {
           {voided ? <Badge token={THEME.flag.blocked} text="UNDONE" size="sm" /> : null}
           {awaiting && !voided ? <Badge token={THEME.safety.highAlert} text="AWAITING CHECK" size="sm" /> : null}
           {entry.check_status === 'checked' ? <Badge token={THEME.status.dispensed} text="CHECKED" size="sm" /> : null}
+          {!voided && money.state === 'settled' ? (
+            <Badge token={THEME.status.dispensed} text="PAID" size="sm" />
+          ) : null}
+          {!voided && money.balance > 0 ? (
+            <Badge token={THEME.flag.unverified} text={`${formatMoney(money.balance)} DUE`} size="sm" />
+          ) : null}
         </View>
       </View>
 
@@ -282,6 +324,14 @@ function HistoryEntry({ entry, onVoid, onCheck }) {
               <PrimaryButton title="Check this dispensing" onPress={onCheck} />
             </View>
           ) : null}
+          {money.payable ? (
+            <View style={styles.historyAction}>
+              <PrimaryButton title={`Take payment · ${formatMoney(money.balance)}`} onPress={onPay} />
+            </View>
+          ) : null}
+          <View style={styles.historyAction}>
+            <SecondaryButton title="Charge slip" onPress={onSlip} />
+          </View>
           <View style={styles.historyAction}>
             <SecondaryButton title="Undo this dispensing" onPress={onVoid} />
           </View>
@@ -552,6 +602,6 @@ const styles = StyleSheet.create({
     borderColor: THEME.safety.highAlert.border,
   },
   historyHoldText: { ...THEME.type.small, color: THEME.safety.highAlert.fg, fontWeight: '600', lineHeight: 20 },
-  historyActions: { flexDirection: 'row', marginTop: THEME.spacing.md },
-  historyAction: { width: 220, marginRight: THEME.spacing.md },
+  historyActions: { flexDirection: 'row', flexWrap: 'wrap', marginTop: THEME.spacing.md, gap: THEME.spacing.md },
+  historyAction: { width: 220 },
 });

@@ -6,7 +6,7 @@ USIntellix HMS pharmacy backend.
 - **Roadmap:** [ROADMAP.md](ROADMAP.md) — architecture decisions and backend findings
 - **Full phase list:** [PHASES.md](PHASES.md) — 15 phases, every endpoint mapped
 - **Phase 0:** [PHASE-0-STATUS.md](PHASE-0-STATUS.md) — environment readiness
-- **Current state: Phase 6 complete** — auth, queue, dispensing, second check, **barcode scanning**
+- **Current state: Phase 7 complete** — auth, queue, dispensing, second check, scanning, **payment**
 
 ---
 
@@ -68,7 +68,40 @@ a lot or let the server allocate, then dispense. Plus undoing a dispensing
    first, soonest first, undated last. `fefoCompare()` reproduces it exactly so
    the preview cannot disagree with what the server does.
 
-Payment and the charge slip are Phase 7.
+### Payment, discounts and the charge slip
+
+Payment is taken per dispensing — from the success screen straight after
+dispensing, or later from the dispensing history, where each entry shows `PAID`
+or how much is still due. Partial payments are allowed and the remaining
+balance is the server's figure, not arithmetic done here.
+
+**The order is enforced, not explained.** A dispensing whose high-alert second
+check is still outstanding cannot be paid for: it has not been handed over yet,
+the backend refuses it, and the sheet offers no way to send it.
+
+Discounts are applied on the **dispense** call, not the payment:
+
+| Discount | Rate | Requires |
+| --- | --- | --- |
+| Senior Citizen (RA 9994) | 20% | ID number **and patient aged 60+** |
+| PWD (RA 10754) | 20% | ID number |
+| Other | 0–100% | a rate and a written reason |
+
+The senior **age rule** is checked on the tablet as well as the server, using
+the patient's age from the detail payload, so the pharmacist is told before the
+whole dispensing is rejected. An unknown age is left to the server.
+
+The charge slip shows on screen for the patient to read — printing is out of
+scope, and the desktop HMS prints the same slip from the same endpoint. Totals
+are the server's figures rather than re-added from the lines: each line is
+rounded and then the dispensing total is rounded, so re-adding could disagree
+by a centavo on a discounted slip, and a receipt that does not add up is worse
+than no receipt.
+
+**A paid-then-voided dispensing shows a refund due.** The server returns a
+negative balance there — the charges are cancelled but the money was taken.
+Clamping that to zero and calling it "settled" would quietly hide money owed
+back to the patient, so the slip names it and says to refund through billing.
 
 ### Scanning
 
@@ -288,6 +321,15 @@ Both are in `usintellix-hospital-management-system`, not here:
   change. The desktop frontend hits the same endpoints.
   `passwordUpdate()` in `src/api/auth.js` also falls back to `/auth/me`, so the
   tablet works against an HMS build from before that fix.
+- **`is_indigent` exposed** (Phase 7) — `detail().patient` now carries it, so the
+  pharmacist can see it before charging.
+
+  **It is not applied to anything.** My own roadmap claimed the backend "models
+  the indigent path" for pharmacy discounts; that was wrong. `is_indigent` is
+  used only in the Patients and Reports modules — there is no indigent discount
+  rule in dispensing or charging, and inventing one would be a policy decision,
+  not a gap to fill. An indigent patient is discounted, if at all, through the
+  `other` discount with a recorded reason.
 - **Scan lookups added** (Phase 6) — `GET /dispensing/scan/rx`,
   `/dispensing/scan/patient` and `/dispensing/scan/lot`, in a new
   `ScanLookupService` + `ScanController`. Each takes what the pharmacist is

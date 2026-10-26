@@ -32,6 +32,18 @@ export default function SafetyHeader({ patient, items = [], duplicateScreen, blo
             .filter(Boolean)
             .join('  ·  ')}
         </Text>
+
+        {/* Shown because it bears on charging. Nothing applies it automatically:
+            there is no indigent discount rule in the pharmacy, so if one is to
+            be given it goes through the 'other' discount with a reason. */}
+        {patient?.is_indigent ? (
+          <View style={styles.indigent}>
+            <Badge token={THEME.flag.refill} text="INDIGENT" size="sm" />
+            <Text style={styles.indigentText}>
+              Recorded as indigent. Check the charging policy before taking payment.
+            </Text>
+          </View>
+        ) : null}
       </View>
 
       {blockedReason ? (
@@ -128,6 +140,8 @@ const styles = StyleSheet.create({
     borderBottomColor: THEME.colors.borderSubtle,
   },
   identity: { marginBottom: THEME.spacing.md },
+  indigent: { flexDirection: 'row', alignItems: 'center', marginTop: THEME.spacing.sm },
+  indigentText: { ...THEME.type.small, color: THEME.colors.textLabel, marginLeft: THEME.spacing.sm, flex: 1 },
   name: { ...THEME.type.title, color: THEME.colors.textTitle },
   meta: { ...THEME.type.small, color: THEME.colors.textLabel, marginTop: 2 },
 

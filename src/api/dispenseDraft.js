@@ -216,6 +216,16 @@ export function validateDraft({ detail, warehouseId, entries, discount }) {
   if (discount?.type === 'senior' || discount?.type === 'pwd') {
     if (!String(discount.id_no || '').trim()) errors.discount_id_no = 'Enter the ID number for this discount.';
   }
+
+  // The backend also checks the patient's birthdate for a Senior discount and
+  // refuses it under 60. Caught here so the pharmacist is told before the
+  // dispensing is sent, rather than having the whole thing rejected.
+  if (discount?.type === 'senior') {
+    const age = detail?.patient?.age;
+    if (age !== null && age !== undefined && Number(age) < 60) {
+      errors.discount_type = `The Senior Citizen discount is for patients 60 or older; this patient is ${age}.`;
+    }
+  }
   if (discount?.type === 'other') {
     const rate = num(discount.rate);
     if (rate <= 0 || rate > 100) errors.discount_rate = 'Enter a discount between 0 and 100 percent.';
