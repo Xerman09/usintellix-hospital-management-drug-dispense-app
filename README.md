@@ -6,8 +6,11 @@ USIntellix HMS pharmacy backend.
 - **Roadmap:** [ROADMAP.md](ROADMAP.md) — architecture decisions and backend findings
 - **Full phase list:** [PHASES.md](PHASES.md) — 15 phases, every endpoint mapped
 - **Phase 0:** [PHASE-0-STATUS.md](PHASE-0-STATUS.md) — environment readiness
-- **Current state: Phase 9 complete** — the whole counter workflow, plus **dashboard and reports**.
-  Only Phase 10 (hardening, UAT, pilot) stands between this and Milestone 1.
+- **Phase 10:** [PHASE-10-STATUS.md](PHASE-10-STATUS.md) — hardening, data-integrity and audit findings
+- **For the counter:** [docs/COUNTER-CARD.md](docs/COUNTER-CARD.md) · [docs/UAT-SCRIPT.md](docs/UAT-SCRIPT.md) · [docs/SOAK-TEST.md](docs/SOAK-TEST.md) · [tools/KIOSK-SETUP.md](tools/KIOSK-SETUP.md)
+- **Current state: every phase up to 10 is built.** What is left before Milestone 1
+  needs the world, not the keyboard: a tablet, HTTPS, a two-hour soak and
+  pharmacist UAT. See [PHASE-10-STATUS.md](PHASE-10-STATUS.md).
 
 ---
 
@@ -307,13 +310,25 @@ npm run build:apk:eas
 
 ```
 src/
-├── api/          client.js (cookie jar + typed envelope), auth, dispensing, inventory
-├── components/   SplitView, DataTable, NumPad, ScanButton, SideNav, Badge, ConnectionBanner
+├── api/          client.js (cookie jar + typed envelope), auth, dispensing, inventory,
+│               scan, verification, reports; and the pure logic modules — authFlow,
+│               queueViews, dispenseDraft, secondCheck, scanVerdict, payment,
+│               refills, reportViews, crashLog
+├── components/   SplitView, DataTable, NumPad, ScanButton, SideNav, Badge,
+│               ConnectionBanner, Form, AuthFlow, IdentityBar, SafetyHeader, ViewTabs,
+│               DispenseSheet, LotPicker, ReasonPrompt, CheckSheet, PaymentSheet,
+│               ChargeSlipSheet, ReportBits, ErrorBoundary
 ├── constants/    config.js (API host), theme.js (design tokens + safety colours)
+├── hooks/        useIdleTimer.js
 ├── navigation/   AppShell.js — rail + routed content
-├── query/        queryClient.js — react-query defaults
-├── screens/      QueueScreen (mock), PlaceholderScreen
+├── query/        queryClient.js — react-query defaults; dispensing and report queries
+├── screens/      Login, Lock, Queue, PrescriptionDetail, Verify, Reports, Diagnostics
 └── store/        session.js — who is signed in
+
+plugins/          withKioskAndroid.js — lock-task attributes on the main activity
+tools/            verify_dispense_integrity.php · KIOSK-SETUP.md
+docs/             COUNTER-CARD.md · UAT-SCRIPT.md · SOAK-TEST.md
+fixtures/         dev_fixtures.sql — dev-only, outside the backend's seed folder
 ```
 
 ## Conventions
@@ -365,6 +380,36 @@ as much as the tablet.
 3. **A row can show `valid_until` in the past while `is_expired` is false,**
    because expiry is judged on `fillable_until`. The app therefore never
    computes expiry itself and always uses the backend's `is_expired`.
+
+## Open issues found in Phase 10
+
+Not fixed here. The first is the one to raise before a pilot.
+
+1. **The HIPAA audit hash chain has been broken since 21 September 2026.**
+   `AuditLogger::verifyIntegrity()` stops at row #11; a full scan puts 604 of
+   1,680 rows off the chain, scattered rather than at one point. That predates
+   this app by a month, and the five rows Phase 10 added chain correctly (604
+   before, 604 after). **It has not been repaired and should not be** —
+   recomputing the hashes would erase the only evidence of what happened and is
+   indistinguishable from tampering. It needs investigating by date against who
+   had access. Until then the trail's tamper-evidence is void from that date on.
+2. **`DSP-TEST-1792679961` is a hand-inserted dispensing** written straight into
+   the database on 22 October: placeholder dispense number, its prescription line
+   gone, never charged, and its lot 10 short in the stock ledger. It is in no
+   file in this repository. It accounts for every real finding the integrity
+   validator reports, and it is a fair picture of what hand-written SQL leaves
+   behind — which is why Phase 8 refused to fake `partial` and `closed`
+   prescriptions the same way.
+3. **Nothing records a drug's high-alert flag as it stood when it was
+   dispensed.** `drugs.is_high_alert` is current state, `check_status` is a
+   historical fact, so a mismatch can mean a skipped second check *or* a Drug
+   Catalog edit since. The validator reports the dangerous direction for a human
+   to settle and treats the harmless one as information. Recording the flag on
+   the dispensing row would close it properly.
+4. **`close()` has no reverse.** A prescription closed to further dispensing
+   stays closed, so the `closed` path cannot be exercised without leaving a
+   permanently closed prescription behind. Close one from the desktop during UAT
+   instead.
 
 ## Backend changes made for this app
 
@@ -459,3 +504,41 @@ Both are in `usintellix-hospital-management-system`, not here:
   id**, so nothing there can be submitted. The tablet shows it under the
   medicine, because a pharmacist who counts 450 on the shelf and sees 200 in the
   app will otherwise assume the app is wrong.
+
+### Phase 10: the audit trail and the client channel
+
+Both in `usintellix-hospital-management-system`, and both benefit the desktop
+HMS identically — it is the same service.
+
+- **Dispensing had no audit trail at all.** Not one `AuditLogger` call in the
+  nine files of the Dispensing module. Handing a controlled medicine to a
+  patient, undoing it, closing a prescription, taking payment, printing a
+  label — none of it reached `hipaa_audit_logs`. Nine new action constants in
+  `AuditLogger`, seven calls in `DispensingService` (written **after** the
+  transaction commits, because an audit row states what happened and failing to
+  write one must never undo medicine that has already left the shelf), and three
+  in `DispensingController` for the chart read and the two prints.
+
+  Reads and prints are logged in the controller rather than the service because
+  `chargeSlip()` calls `labels()` internally — logging there would record two
+  prints for one. The queue is deliberately not logged: it polls every 30
+  seconds, which would add roughly a thousand rows per tablet per shift and bury
+  the rows that say who opened whose record. Descriptions name the record, never
+  the patient; `patient_id` is already a column.
+
+- **Nothing said which client made a dispensing.** The tablet and the desktop
+  post to the same endpoints as the same accounts, so "compare tablet
+  dispensings with desktop dispensings" could not even be asked. Added
+  `Core\Channel` (header, then user agent, then CLI),
+  `prescription_dispenses.created_via` (schema `332`, applied and idempotent),
+  and the stamp in `dispense()`.
+
+  The value is a **claim made by the client**, not proof — fit for operational
+  attribution during a pilot, useless as a security control, and nothing is
+  authorised on it. `ensureChannelColumn()` self-heals a deployment that never
+  ran the migration, guarded by a static flag and called **before** the
+  transaction opens: DDL implicitly commits in MySQL, and that is exactly the
+  bug that made dispensing non-atomic in Phase 4.
+
+- **`labels()` and `chargeSlip()` now return `patient_id`** so the controller
+  can audit a print against the right patient. Nothing displays it.

@@ -190,17 +190,19 @@ verified by DB comparison, not screenshot.
 
 ## Phase 10 — Counter hardening, UAT & go-live 🎯
 
+*Status: [PHASE-10-STATUS.md](PHASE-10-STATUS.md). Six of ten done; the four that are not need a tablet, a network and two pharmacists.*
+
 | # | Sub-phase | Detail |
 | --- | --- | --- |
-| 10.1 | Kiosk / lock-task mode | Tablet can't be navigated out of the app. |
-| 10.2 | Crash & error reporting | Plus a diagnostics screen showing backend URL, app version, session state. |
-| 10.3 | Performance pass | Queue at the full 300-row limit, large lot lists, long shifts. |
-| 10.4 | Soak test | Two-hour continuous shift simulation on the real tablet. |
-| 10.5 | **Data-integrity validation** | Tablet dispenses vs desktop dispenses compared at DB level across every path: full, partial, multi-lot, voided, closed, high-alert. |
-| 10.6 | HIPAA audit verification | Confirm every tablet action writes the expected `hipaa_audit_logs` rows. |
-| 10.7 | Pharmacist UAT | Real pharmacists, real prescriptions, test database. |
-| 10.8 | Training & quick-reference | One-page card for the counter. |
-| 10.9 | Pilot at one counter | Desktop HMS stays available as fallback. |
+| 10.1 | Kiosk / lock-task mode | **Half done.** Manifest attributes and the Back guard ship; the native `startLockTask()` call is not written. Start the pilot on screen pinning — `tools/KIOSK-SETUP.md`. |
+| 10.2 | Crash & error reporting | **Done.** On-device only, redacted; no third-party service, because the context is a prescription. Diagnostics screen in the rail as *Status*. |
+| 10.3 | Performance pass | **Done at the logic layer** — memoised rows, cached row models, 0.25 ms for 300 rows. Frame timing needs the device. |
+| 10.4 | Soak test | **Procedure written, not run** — `docs/SOAK-TEST.md`. Needs the tablet. |
+| 10.5 | **Data-integrity validation** | **Done** — `tools/verify_dispense_integrity.php`. Needed a new `created_via` column before the comparison was even possible. Tablet column clean across full, partial, multi-lot, voided and high-alert; `closed` still unexercised. |
+| 10.6 | HIPAA audit verification | **Done** — and it failed first: the Dispensing module wrote **no** audit rows at all. Now 9 actions logged, verified live. Separately found the audit hash chain broken since September. |
+| 10.7 | Pharmacist UAT | **Script written, not run** — `docs/UAT-SCRIPT.md`. Needs two pharmacists. |
+| 10.8 | Training & quick-reference | **Done** — `docs/COUNTER-CARD.md`. |
+| 10.9 | Pilot at one counter | Blocked on 0.1 (hardware), 0.2 (HTTPS), 10.4 and 10.7. Desktop HMS stays available as fallback. |
 | 10.10 | Rollout to all counters | After a clean pilot period. |
 
 **Exit:** 🎯 **Milestone 1 — pharmacy counter app in production.**

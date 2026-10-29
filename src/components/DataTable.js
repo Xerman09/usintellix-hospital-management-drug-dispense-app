@@ -3,6 +3,48 @@ import { View, Text, FlatList, Pressable, ActivityIndicator, StyleSheet } from '
 import { THEME } from '../constants/theme';
 
 /**
+ * One row, memoised (Phase 10.3).
+ *
+ * FlatList calls renderItem again for every mounted row whenever the function
+ * identity changes -- and on the queue screen it changes on every keystroke in
+ * the search box, because the columns are rebuilt. React.memo here stops that
+ * reaching the cells: the row only re-renders when its own item, position,
+ * selection or disabled reason actually changed.
+ *
+ * The comparison is deliberately shallow on `item`. Row objects come from
+ * react-query, which replaces them when the data changes and keeps them when
+ * it does not, so object identity IS the "has this row changed" signal.
+ */
+const Row = React.memo(function Row({ item, index, columns, reason, selected, onSelect, renderCell, cellStyle }) {
+  const disabled = Boolean(reason);
+
+  return (
+    <Pressable
+      onPress={disabled || !onSelect ? undefined : () => onSelect(item)}
+      disabled={disabled || !onSelect}
+      accessibilityRole={onSelect ? 'button' : undefined}
+      accessibilityState={{ selected, disabled }}
+      style={({ pressed }) => [
+        styles.row,
+        index % 2 === 1 && styles.rowAlt,
+        selected && styles.rowSelected,
+        disabled && styles.rowDisabled,
+        pressed && !disabled && styles.rowPressed,
+      ]}
+    >
+      <View style={styles.rowCells}>
+        {columns.map((col) => (
+          <View key={col.key} style={cellStyle(col)}>
+            {renderCell(col, item)}
+          </View>
+        ))}
+      </View>
+      {disabled ? <Text style={styles.disabledReason}>{reason}</Text> : null}
+    </Pressable>
+  );
+});
+
+/**
  * Dense, touch-scrollable table for the queues and the lot lists.
  *
  * Rows are at least 56dp high (THEME.touch.comfortable) because they are
@@ -55,32 +97,18 @@ export default function DataTable({
 
   const renderRow = ({ item, index }) => {
     const reason = disabledReason ? disabledReason(item) : null;
-    const disabled = Boolean(reason);
-    const selected = keyExtractor(item) === selectedKey;
 
     return (
-      <Pressable
-        onPress={disabled || !onSelect ? undefined : () => onSelect(item)}
-        disabled={disabled || !onSelect}
-        accessibilityRole={onSelect ? 'button' : undefined}
-        accessibilityState={{ selected, disabled }}
-        style={({ pressed }) => [
-          styles.row,
-          index % 2 === 1 && styles.rowAlt,
-          selected && styles.rowSelected,
-          disabled && styles.rowDisabled,
-          pressed && !disabled && styles.rowPressed,
-        ]}
-      >
-        <View style={styles.rowCells}>
-          {columns.map((col) => (
-            <View key={col.key} style={cellStyle(col)}>
-              {renderCell(col, item)}
-            </View>
-          ))}
-        </View>
-        {disabled ? <Text style={styles.disabledReason}>{reason}</Text> : null}
-      </Pressable>
+      <Row
+        item={item}
+        index={index}
+        columns={columns}
+        reason={reason}
+        selected={keyExtractor(item) === selectedKey}
+        onSelect={onSelect}
+        renderCell={renderCell}
+        cellStyle={cellStyle}
+      />
     );
   };
 
@@ -108,6 +136,13 @@ export default function DataTable({
         data={rows}
         keyExtractor={(item) => String(keyExtractor(item))}
         renderItem={renderRow}
+        // A landscape tablet shows roughly twice what a phone does, so the
+        // phone-shaped defaults (10 rows, then batches of 10) leave blank
+        // space on first paint and while flinging through 300 rows.
+        initialNumToRender={20}
+        maxToRenderPerBatch={20}
+        windowSize={11}
+        removeClippedSubviews
         ListEmptyComponent={
           <View style={styles.centre}>
             <Text style={styles.emptyText}>{emptyText}</Text>

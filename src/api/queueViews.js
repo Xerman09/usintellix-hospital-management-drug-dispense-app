@@ -98,3 +98,66 @@ export function countFor(view, counts) {
   const n = counts[meta.countKey];
   return typeof n === 'number' ? n : null;
 }
+
+/* ------------------------------------------------------------------ *
+ * Row models (Phase 10.3)
+ * ------------------------------------------------------------------ */
+
+/**
+ * Everything a queue row draws, worked out once.
+ *
+ * Why this exists: the queue is capped at 300 rows and the screen re-renders
+ * on every keystroke in the search box. Doing rowFlags() and medicineSummary()
+ * inside the render of each visible row meant repeating that work for every
+ * mounted row on every keystroke -- cheap individually, and the sort of thing
+ * that makes a 2 GB counter tablet feel like it is lagging behind the typist.
+ *
+ * Pure: the same row object in gives an equal model out, with no theme and no
+ * React in sight. The screen turns the flag keys into badges.
+ */
+export function buildRowModel(row) {
+  if (!row) return null;
+
+  const lines = Number(row.line_count) || 0;
+
+  return {
+    id: row.id,
+    rxNumber: row.rx_number,
+    patientName: row.patient_name,
+    patientNo: row.patient_no || null,
+    medicines: medicineSummary(row),
+    prescribedDate: row.prescribed_date,
+    lineLabel: `${lines} line${lines === 1 ? '' : 's'}`,
+    status: row.dispense_status,
+    statusLabel: row.status_label,
+    flags: rowFlags(row),
+  };
+}
+
+/**
+ * Cache keyed by the row OBJECT, not its id.
+ *
+ * react-query hands back the same row objects between renders and new ones
+ * after a refetch, which is exactly the lifetime a model should have: identity
+ * is the signal that the row's contents cannot have changed. A WeakMap because
+ * the models must not keep refetched rows -- and the patient names in them --
+ * alive after the queue has moved on.
+ */
+const MODELS = new WeakMap();
+
+/** The model for one row, built at most once per row object. */
+export function rowModel(row) {
+  if (!row || typeof row !== 'object') return null;
+
+  const cached = MODELS.get(row);
+  if (cached) return cached;
+
+  const model = buildRowModel(row);
+  MODELS.set(row, model);
+  return model;
+}
+
+/** Models for a list of rows, in order. */
+export function rowModels(rows) {
+  return Array.isArray(rows) ? rows.map(rowModel) : [];
+}

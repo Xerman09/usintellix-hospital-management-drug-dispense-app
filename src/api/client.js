@@ -191,6 +191,14 @@ export async function apiRequest(endpoint, options = {}) {
       signal: controller.signal,
       headers: {
         Accept: 'application/json',
+        // Say which client this is, so a dispensing in the database can be
+        // traced back to the tablet rather than the desktop HMS -- both post
+        // to the same endpoints as the same accounts. The header is the
+        // primary signal; the User-Agent repeats it for the case where a
+        // proxy strips unknown headers. Neither is a credential: the backend
+        // uses it for attribution only (see backend/app/Core/Channel.php).
+        'X-Client-Channel': 'tablet',
+        'User-Agent': `USIntellixPharmacyTablet/${CONFIG.VERSION} (Android)`,
         ...(body ? { 'Content-Type': 'application/json' } : {}),
         ...(cookie ? { Cookie: cookie } : {}),
       },

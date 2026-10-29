@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, TextInput, Pressable, StyleSheet } from 'react-native';
 import SplitView from '../components/SplitView';
 import DataTable from '../components/DataTable';
@@ -9,7 +9,7 @@ import PrescriptionDetail from './PrescriptionDetail';
 import { ScanService } from '../api/scan';
 import { verdictForRx } from '../api/scanVerdict';
 import { useDispensingQueue } from '../query/dispensingQueries';
-import { DEFAULT_VIEW, rowFlags, medicineSummary, freshness, viewMeta } from '../api/queueViews';
+import { DEFAULT_VIEW, rowModel, freshness, viewMeta } from '../api/queueViews';
 import { THEME, statusStyle } from '../constants/theme';
 
 /**
@@ -86,47 +86,55 @@ export default function QueueScreen() {
     }
   }, [rows, selectedId]);
 
-  const columns = [
+  // Stable across renders: the columns close over nothing that changes, and a
+  // new array here re-renders every mounted row (see DataTable's Row memo).
+  // Each cell draws from the row's cached model rather than recomputing its
+  // flags and medicine summary (Phase 10.3).
+  const columns = useMemo(() => [
     {
       key: 'rx_number',
       title: 'Rx / patient',
       flex: 2.2,
-      render: (row) => (
-        <View>
-          <Text style={styles.rxNumber}>{row.rx_number}</Text>
-          <Text style={styles.patient} numberOfLines={1}>
-            {row.patient_name}
-            {row.patient_no ? <Text style={styles.patientNo}>  {row.patient_no}</Text> : null}
-          </Text>
-          {medicineSummary(row) ? (
-            <Text style={styles.medicines} numberOfLines={1}>{medicineSummary(row)}</Text>
-          ) : null}
-        </View>
-      ),
+      render: (row) => {
+        const m = rowModel(row);
+        return (
+          <View>
+            <Text style={styles.rxNumber}>{m.rxNumber}</Text>
+            <Text style={styles.patient} numberOfLines={1}>
+              {m.patientName}
+              {m.patientNo ? <Text style={styles.patientNo}>  {m.patientNo}</Text> : null}
+            </Text>
+            {m.medicines ? (
+              <Text style={styles.medicines} numberOfLines={1}>{m.medicines}</Text>
+            ) : null}
+          </View>
+        );
+      },
     },
     {
       key: 'prescribed_date',
       title: 'Prescribed',
       flex: 1,
-      render: (row) => (
-        <View>
-          <Text style={styles.cellText}>{row.prescribed_date}</Text>
-          <Text style={styles.cellDim}>
-            {row.line_count} line{row.line_count === 1 ? '' : 's'}
-          </Text>
-        </View>
-      ),
+      render: (row) => {
+        const m = rowModel(row);
+        return (
+          <View>
+            <Text style={styles.cellText}>{m.prescribedDate}</Text>
+            <Text style={styles.cellDim}>{m.lineLabel}</Text>
+          </View>
+        );
+      },
     },
     {
       key: 'flags',
       title: 'Status',
       flex: 1.6,
       render: (row) => {
-        const flags = rowFlags(row);
+        const m = rowModel(row);
         return (
           <View style={styles.badgeStack}>
-            <Badge token={statusStyle(row.dispense_status)} text={row.status_label} size="sm" />
-            {flags.map((f) => {
+            <Badge token={statusStyle(m.status)} text={m.statusLabel} size="sm" />
+            {m.flags.map((f) => {
               const def = FLAG_TOKENS[f];
               if (!def) return null;
               return <Badge key={f} token={def.token} text={def.text || undefined} size="sm" />;
@@ -135,7 +143,7 @@ export default function QueueScreen() {
         );
       },
     },
-  ];
+  ], []);
 
   const master = (
     <View style={styles.masterPane}>

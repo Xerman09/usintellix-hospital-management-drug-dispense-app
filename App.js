@@ -6,6 +6,8 @@ import AppShell from './src/navigation/AppShell';
 import LoginScreen from './src/screens/LoginScreen';
 import LockScreen from './src/screens/LockScreen';
 import useIdleTimer from './src/hooks/useIdleTimer';
+import ErrorBoundary from './src/components/ErrorBoundary';
+import { installGlobalHandler } from './src/api/crashLog';
 import { SessionProvider, useSession } from './src/store/session';
 import { queryClient } from './src/query/queryClient';
 import { CONFIG } from './src/constants/config';
@@ -60,6 +62,11 @@ function Gate() {
   );
 }
 
+// Catch what a React error boundary cannot: a throw in a timer, an event
+// handler or an unhandled rejection. Installed once, at module load, so it is
+// already in place before the first render can fail.
+installGlobalHandler();
+
 export default function App() {
   return (
     <SafeAreaProvider>
@@ -67,7 +74,12 @@ export default function App() {
         <SessionProvider>
           <StatusBar barStyle="light-content" backgroundColor={THEME.colors.railBg} />
           <SafeAreaView style={styles.root} edges={['top', 'bottom', 'left', 'right']}>
-            <Gate />
+            {/* The outermost net. AppShell has its own boundary around the
+              * content area; this one only catches a failure in the sign-in
+              * gate itself, where there is no shell left to render into. */}
+            <ErrorBoundary where="app">
+              <Gate />
+            </ErrorBoundary>
           </SafeAreaView>
         </SessionProvider>
       </QueryClientProvider>
