@@ -18,7 +18,8 @@ import Constants from 'expo-constants';
 const API_PATH = '/ims/usintellix-hospital-management-system/backend/public';
 
 function resolveBaseUrl() {
-  const configured = Constants.expoConfig?.extra?.apiBaseUrl;
+  const configured = Constants.expoConfig?.extra?.apiBaseUrl ||
+                     (typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_API_URL);
   if (configured) return String(configured).replace(/\/+$/, '');
 
   const host = Platform.OS === 'android' ? '10.0.2.2' : 'localhost';
